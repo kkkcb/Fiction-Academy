@@ -58,9 +58,9 @@ function renderProjectsPage(app, s) {
   app.innerHTML = html`
   <div class="app-workspace">
     <div class="sidebar-left">
-      <div style="padding:20px 16px;border-bottom:1px solid var(--border-color);">
-        <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:2px;">Fiction Academy</div>
-        <div style="font-size:12px;color:var(--text-tertiary);">AI 小说创作平台</div>
+      <div class="sidebar-brand">
+        <div class="sidebar-brand-title">Fiction Academy</div>
+        <div class="sidebar-brand-sub">AI 小说创作平台</div>
       </div>
       <button class="btn-new-conv" data-action="create-project">+ 新建项目</button>
       <div class="conv-list">
@@ -90,9 +90,9 @@ function renderWorkspacePage(app, s) {
   app.innerHTML = html`
   <div class="app-workspace">
     <div class="sidebar-left">
-      <div style="padding:16px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:8px;">
+      <div class="glass-header">
         <button class="btn" data-action="go-home" style="padding:6px 10px;font-size:12px;">← 返回</button>
-        <span style="font-size:14px;font-weight:700;color:var(--text-primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" data-action="edit-project-name" title="点击修改项目名称">${esc(s.projects.find(p => p.id === s.currentProjectId)?.name || '')}</span>
+        <span class="glass-header-title" data-action="edit-project-name" title="点击修改项目名称">${esc(s.projects.find(p => p.id === s.currentProjectId)?.name || '')}</span>
       </div>
       <button class="btn-new-conv" data-action="new-conv">+ 新对话</button>
       <div class="conv-list">
@@ -135,8 +135,8 @@ function renderWorkspacePage(app, s) {
     </div>
     <div class="resize-handle" id="resize-right"></div>
     <div class="sidebar-right">
-      <div style="padding:16px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;justify-content:space-between;">
-        <span style="font-size:14px;font-weight:700;color:var(--text-primary);">工作台</span>
+      <div class="glass-header">
+        <span class="glass-header-title">工作台</span>
         <div style="display:flex;gap:6px;">
           ${s.isSummarizing
             ? html`<button class="btn" disabled style="padding:4px 10px;font-size:12px;opacity:0.6;">⏳ 整理中...</button>`
@@ -191,10 +191,6 @@ function renderWorkspacePage(app, s) {
       <button data-action="mobile-show-right" class="${s._mobileTab === 'right' ? 'active' : ''}"><span>📝</span>工作台</button>
     </div>
   </div>`
-  setTimeout(() => {
-    const msgs = document.getElementById('chat-messages')
-    if (msgs) msgs.scrollTop = msgs.scrollHeight
-  }, 0)
 }
 
 function renderMessages(s) {
@@ -245,15 +241,21 @@ function renderWorkspaceItems(s) {
         <div class="empty-hint">在对话中创作的内容可以保存到这里</div>
       </div>`
   }
-  return s.workspaceItems.map(item => html`
+  return s.workspaceItems.map(item => {
+    const headings = (item.content || '').match(/^## .+$/gm) || []
+    return html`
     <div class="ws-item ${item.status === 'locked' ? 'locked' : ''}">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
         <span class="ws-type-badge ${item.item_type === 'chapter' ? 'plot' : item.item_type === 'character_setting' ? 'character' : item.item_type === 'world_setting' ? 'setting' : 'theme'}">${TYPE_LABELS[item.item_type] || item.item_type}</span>
         <span class="ws-status ${item.status}">${STATUS_LABELS[item.status]}</span>
-        ${item.chapter_number != null ? html`<span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-mono);">#${item.chapter_number}</span>` : ''}
+        ${headings.length > 0 ? html`<span style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono);">${headings.length} 个章节</span>` : ''}
       </div>
       <div class="ws-title">${esc(item.title || '无标题')}</div>
-      ${item.subtitle ? html`<div style="font-size:11px;color:var(--accent);margin-top:-2px;margin-bottom:2px;">${esc(item.subtitle)}</div>` : ''}
+      ${headings.length > 0 ? html`
+        <div style="margin:6px 0;padding:6px 8px;background:var(--bg-secondary);border-radius:var(--radius-sm);font-size:11px;line-height:1.6;">
+          ${headings.map(h => html`<div style="color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(h.replace(/^##\s*/, ''))}</div>`).join('')}
+        </div>
+      ` : ''}
       <div class="markdown-body" style="font-size:12px;max-height:80px;overflow:hidden;line-height:1.5;">${formatMd((item.content || '').slice(0, 300))}</div>
       <div class="ws-actions">
         ${item.status === 'draft' ? html`<button class="btn-approve" data-action="approve-item" data-id="${esc(item.id)}">通过</button>` : ''}
@@ -263,7 +265,7 @@ function renderWorkspaceItems(s) {
         ${item.status !== 'locked' ? html`<button class="btn-delete" data-action="delete-item" data-id="${esc(item.id)}">删除</button>` : ''}
       </div>
     </div>
-  `).join('')
+  `}).join('')
 }
 
 function renderChronicle(chronicle) {
@@ -305,6 +307,20 @@ function renderChronicle(chronicle) {
 let _prevFullKey = ''
 let _prevMsgKey = ''
 let _streamingStarted = false
+let _autoScroll = false
+let _savedScrollRatio = 1
+
+function _scrollToBottom() {
+  const msgsEl = document.getElementById('chat-messages')
+  if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight
+}
+
+function _restoreScrollRatio() {
+  const msgsEl = document.getElementById('chat-messages')
+  if (msgsEl && msgsEl.scrollHeight > 0) {
+    msgsEl.scrollTop = _savedScrollRatio * msgsEl.scrollHeight
+  }
+}
 
 function smartRender() {
   const s = getState()
@@ -322,19 +338,26 @@ function smartRender() {
   if (s.isStreaming) {
     if (!_streamingStarted) {
       _streamingStarted = true
+      _autoScroll = true
       const msgsEl = document.getElementById('chat-messages')
       if (msgsEl) {
         msgsEl.innerHTML = renderMessages(s)
         const btn = document.getElementById('btn-send')
         if (btn) btn.disabled = true
+        msgsEl.scrollTop = msgsEl.scrollHeight
       }
       return
     }
     const contentEl = document.querySelector('#streaming-msg .msg-content')
     if (contentEl) {
       contentEl.innerHTML = formatMd(s.streamingContent) + '<span class="streaming-cursor"></span>'
-      const msgsEl = document.getElementById('chat-messages')
-      if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight
+      if (_autoScroll) {
+        const msgsEl = document.getElementById('chat-messages')
+        if (msgsEl) {
+          const nearBottom = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80
+          if (nearBottom) msgsEl.scrollTop = msgsEl.scrollHeight
+        }
+      }
     }
     return
   }
@@ -342,17 +365,25 @@ function smartRender() {
   if (_streamingStarted) {
     _streamingStarted = false
     _prevFullKey = ''
+    _autoScroll = false
   }
 
   const fullKey = `${s.currentProjectId}-${s.currentConversationId}-${s.conversations.length}-${s.workspaceItems.length}-${s.messages.length}`
   if (fullKey !== _prevFullKey) {
+    const prevConvId = _prevFullKey.split('-')[1]
+    const convChanged = _prevFullKey && prevConvId !== `${s.currentConversationId}`
+    const msgsEl = document.getElementById('chat-messages')
+    if (msgsEl && msgsEl.scrollHeight > 0) {
+      _savedScrollRatio = msgsEl.scrollTop / msgsEl.scrollHeight
+    }
     _prevFullKey = fullKey
     _prevMsgKey = ''
     render()
-    requestAnimationFrame(() => {
-      const msgsEl = document.getElementById('chat-messages')
-      if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight
-    })
+    if (convChanged || _savedScrollRatio >= 0.95) {
+      requestAnimationFrame(_scrollToBottom)
+    } else {
+      requestAnimationFrame(_restoreScrollRatio)
+    }
     return
   }
 }
@@ -436,16 +467,28 @@ window._submitSummarizeSave = async () => {
   if (btn) { btn.disabled = true; btn.textContent = '保存中...' }
   try {
     const s = getState()
-    const title = document.getElementById('input-save-title')?.value?.trim()
     const subtitle = document.getElementById('input-save-subtitle')?.value?.trim() || ''
-    const content = document.getElementById('input-save-content')?.value?.trim()
+    const rawContent = document.getElementById('input-save-content')?.value?.trim()
     const item_type = document.getElementById('input-save-type')?.value || 'world_setting'
-    if (!title) { showToast('请输入主标题', 'error'); if (btn) { btn.disabled = false; btn.textContent = '💾 保存到工作台' }; return }
-    await createWorkspaceItem(s.currentProjectId, { item_type, title, subtitle, content })
+    if (!rawContent) { showToast('内容不能为空', 'error'); if (btn) { btn.disabled = false; btn.textContent = '💾 保存到工作台' }; return }
+
+    const heading = subtitle ? `## ${subtitle}\n\n` : ''
+    const newSection = heading + rawContent
+
+    const existing = s.workspaceItems.find(w => w.item_type === item_type)
+    if (existing) {
+      const merged = (existing.content || '').rstrip ? (existing.content || '').replace(/\s+$/, '') : (existing.content || '').trimEnd()
+      const updatedContent = merged + '\n\n' + newSection
+      await updateWorkspaceItem(existing.id, { content: updatedContent })
+      showToast('已补充到「' + (existing.title || existing.item_type) + '」', 'success')
+    } else {
+      const title = document.getElementById('input-save-title')?.value?.trim() || '世界观设定'
+      await createWorkspaceItem(s.currentProjectId, { item_type, title, subtitle: '', content: newSection })
+      showToast('已创建新文档', 'success')
+    }
     await fetchWorkspaceItems(s.currentProjectId)
     closeModal()
     render()
-    showToast('已保存到工作台', 'success')
   } catch (err) {
     showToast('保存失败: ' + err.message, 'error')
     if (btn) { btn.disabled = false; btn.textContent = '💾 保存到工作台' }
@@ -621,30 +664,39 @@ function showModal(type, data) {
     </div>`
   } else if (type === 'summarize-msg') {
     const genResult = data?.generated
+    const s = getState()
     content = html`
     <div class="modal-overlay" onclick="window._closeModal()">
       <div class="modal" onclick="event.stopPropagation()" style="max-width:600px;">
-        <div class="modal-title">${genResult ? '检查总结内容' : '📝 总结另存为'}</div>
+        <div class="modal-title">${genResult ? '检查并保存' : '📝 总结另存为'}</div>
         <div class="modal-body">
           ${genResult ? html`
             <div style="display:flex;gap:8px;margin-bottom:12px;">
               <div style="flex:1;">
-                <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">主标题</label>
-                <input id="input-save-title" class="chat-input" style="width:100%;border-radius:8px;" value="${esc(genResult.title)}" />
+                <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">保存类型</label>
+                <select id="input-save-type" class="chat-input" style="width:100%;border-radius:8px;">
+                  <option value="world_setting" ${genResult.item_type === 'world_setting' ? 'selected' : ''}>🌍 世界观设定</option>
+                  <option value="character_setting" ${genResult.item_type === 'character_setting' ? 'selected' : ''}>👤 角色设定</option>
+                  <option value="outline" ${genResult.item_type === 'outline' ? 'selected' : ''}>📋 故事大纲</option>
+                </select>
               </div>
               <div style="flex:1;">
-                <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">副标题</label>
-                <input id="input-save-subtitle" class="chat-input" style="width:100%;border-radius:8px;" placeholder="如：基础设定、xx门派..." />
+                <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">章节标题</label>
+                <input id="input-save-subtitle" class="chat-input" style="width:100%;border-radius:8px;" value="${esc(genResult.subtitle || '')}" placeholder="AI 建议或自定义..." />
               </div>
             </div>
-            <div style="margin-bottom:12px;">
-              <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">保存类型</label>
-              <select id="input-save-type" class="chat-input" style="width:100%;border-radius:8px;">
-                <option value="world_setting" ${genResult.item_type === 'world_setting' ? 'selected' : ''}>🌍 世界观设定</option>
-                <option value="character_setting" ${genResult.item_type === 'character_setting' ? 'selected' : ''}>👤 角色设定</option>
-                <option value="outline" ${genResult.item_type === 'outline' ? 'selected' : ''}>📋 故事大纲</option>
-              </select>
-            </div>
+            ${(() => {
+              const existing = s.workspaceItems?.find(w => w.item_type === genResult.item_type)
+              if (existing) {
+                return html`<div style="margin-bottom:12px;padding:8px 12px;background:var(--accent-light);border-radius:var(--radius-sm);font-size:12px;color:var(--accent);">
+                  📎 将补充到已有文档「${esc(existing.title)}」中（以 ## 章节标题追加）
+                </div>`
+              }
+              return html`<div style="margin-bottom:12px;padding:8px 12px;background:var(--chip-finalized-bg);border-radius:var(--radius-sm);font-size:12px;color:var(--chip-finalized);">
+                ✨ 该类型尚无文档，将创建新文档
+              </div>`
+            })()}
+            <input type="hidden" id="input-save-title" value="${esc(genResult.title)}" />
             <div>
               <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">内容（可直接编辑修改）</label>
               <textarea id="input-save-content" class="chat-input" data-item-type="${esc(genResult.item_type)}" style="width:100%;min-height:280px;border-radius:8px;font-size:12px;">${esc(genResult.content)}</textarea>
@@ -670,7 +722,7 @@ function showModal(type, data) {
         <div class="modal-actions">
           <button class="btn" onclick="window._closeModal()">取消</button>
           ${genResult
-            ? html`<button class="btn-primary" onclick="window._submitSummarizeSave()">💾 保存到工作台</button>`
+            ? html`<button class="btn-primary" onclick="window._submitSummarizeSave()">💾 ${s.workspaceItems?.find(w => w.item_type === genResult.item_type) ? '补充到文档' : '创建新文档'}</button>`
             : ''
           }
         </div>
@@ -1217,8 +1269,6 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   if (e.target.id === 'assistant-select') {
     selectAssistant(e.target.value)
-    _prevFullKey = ''
-    smartRender()
   }
   const syncTargetMatch = e.target.id?.match(/^sync-target-(\d+)$/)
   if (syncTargetMatch) {
@@ -1298,6 +1348,7 @@ function handleSend() {
   const s = getState()
   if (!s.currentConversationId) return
   if (s.isStreaming) return
+  _autoScroll = true
   input.value = ''
   input.style.height = 'auto'
   sendMessage(s.currentConversationId, content)
