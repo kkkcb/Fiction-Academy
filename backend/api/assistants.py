@@ -1,11 +1,13 @@
 import uuid
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.database import get_db
+from backend.database import get_db, fetch_all, fetch_one
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api")
 
 BUILTIN_ASSISTANTS = [
     {
@@ -28,11 +30,13 @@ BUILTIN_ASSISTANTS = [
     },
 ]
 
+
 class AssistantCreate(BaseModel):
     name: str
     description: str = ""
     system_prompt: str = ""
     model: str = ""
+
 
 class AssistantUpdate(BaseModel):
     name: str | None = None
@@ -40,23 +44,25 @@ class AssistantUpdate(BaseModel):
     system_prompt: str | None = None
     model: str | None = None
 
-async def _ensure_builtins():
+
+async def ensure_builtins():
     db = await get_db()
     for a in BUILTIN_ASSISTANTS:
-        cursor = await db.execute_fetchall("SELECT id FROM assistants WHERE id = ?", (a["id"],))
-        if not cursor:
+        row = await fetch_one(db, "SELECT id FROM assistants WHERE id = ?", (a["id"],))
+        if not row:
             await db.execute(
                 "INSERT INTO assistants (id, name, description, system_prompt, model, is_builtin) VALUES (?, ?, ?, ?, ?, ?)",
                 (a["id"], a["name"], a["description"], a["system_prompt"], a["model"], a["is_builtin"]),
             )
-            await db.commit()
+    await db.commit()
+
 
 @router.get("/assistants")
 async def list_assistants():
-    await _ensure_builtins()
     db = await get_db()
-    cursor = await db.execute_fetchall("SELECT * FROM assistants ORDER BY is_builtin DESC, created_at ASC")
-    return [dict(row) for row in cursor]
+    rows = await fetch_all(db, "SELECT * FROM assistants ORDER BY is_builtin DESC, created_at ASC")
+    return rows
+
 
 @router.post("/assistants")
 async def create_assistant(body: AssistantCreate):
@@ -67,41 +73,42 @@ async def create_assistant(body: AssistantCreate):
         (aid, body.name, body.description, body.system_prompt, body.model),
     )
     await db.commit()
-    cursor = await db.execute_fetchall("SELECT * FROM assistants WHERE id = ?", (aid,))
-    return dict(cursor[0])
+    row = await fetch_one(db, "SELECT * FROM assistants WHERE id = ?", (aid,))
+    return row
+
 
 @router.put("/assistants/{assistant_id}")
 async def update_assistant(assistant_id: str, body: AssistantUpdate):
     db = await get_db()
-    cursor = await db.execute_fetchall("SELECT * FROM assistants WHERE id = ?", (assistant_id,))
-    if not cursor:
+    existing = await fetch_one(db, "SELECT * FROM assistants WHERE id = ?", (assistant_id,))
+    if not existing:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    existing = dict(cursor[0])
+
+    name = body.name if body.name is not None else existing["name"]
+    description = body.description if body.description is not None else existing["description"]
+    model = body.model if body.model is not None else existing["model"]
+
     if existing.get("is_builtin"):
-        name = body.name if body.name is not None else existing["name"]
-        description = body.description if body.description is not None else existing["description"]
-        system_prompt = body.system_prompt if body.system_prompt is not None else existing["system_prompt"]
-        model = body.model if body.model is not None else existing["model"]
+        system_prompt = existing["system_prompt"]
     else:
-        name = body.name if body.name is not None else existing["name"]
-        description = body.description if body.description is not None else existing["description"]
         system_prompt = body.system_prompt if body.system_prompt is not None else existing["system_prompt"]
-        model = body.model if body.model is not None else existing["model"]
+
     await db.execute(
         "UPDATE assistants SET name=?, description=?, system_prompt=?, model=?, updated_at=datetime('now') WHERE id=?",
         (name, description, system_prompt, model, assistant_id),
     )
     await db.commit()
-    cursor = await db.execute_fetchall("SELECT * FROM assistants WHERE id = ?", (assistant_id,))
-    return dict(cursor[0])
+    row = await fetch_one(db, "SELECT * FROM assistants WHERE id = ?", (assistant_id,))
+    return row
+
 
 @router.delete("/assistants/{assistant_id}")
 async def delete_assistant(assistant_id: str):
     db = await get_db()
-    cursor = await db.execute_fetchall("SELECT is_builtin FROM assistants WHERE id = ?", (assistant_id,))
-    if not cursor:
+    row = await fetch_one(db, "SELECT is_builtin FROM assistants WHERE id = ?", (assistant_id,))
+    if not row:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    if dict(cursor[0]).get("is_builtin"):
+    if row.get("is_builtin"):
         raise HTTPException(status_code=403, detail="Cannot delete built-in assistant")
     await db.execute("DELETE FROM assistants WHERE id = ?", (assistant_id,))
     await db.commit()

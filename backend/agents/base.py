@@ -1,91 +1,117 @@
 import json
-import time
+import asyncio
 import logging
+
 from openai import AsyncOpenAI
 
-from backend.config import XIAOMI_API_KEY, XIAOMI_BASE_URL, DEFAULT_MODEL
+from backend.config import (
+    XIAOMI_API_KEY,
+    XIAOMI_BASE_URL,
+    DEFAULT_MODEL,
+    SYSTEM_PROMPT,
+    LLM_TIMEOUT,
+    LLM_MAX_RETRIES,
+    LLM_MAX_TOKENS,
+)
 
-logger = logging.getLogger("llm")
+logger = logging.getLogger(__name__)
 
 _client: AsyncOpenAI | None = None
 
-def get_client() -> AsyncOpenAI:
+
+def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
         _client = AsyncOpenAI(
             api_key=XIAOMI_API_KEY,
             base_url=XIAOMI_BASE_URL,
+            timeout=LLM_TIMEOUT,
         )
     return _client
 
-SYSTEM_PROMPT = """你是一位专业的小说创作助手。你拥有丰富的小说创作经验，擅长：
-- 构建自洽的世界观体系
-- 设计立体的角色
-- 编写引人入胜的故事情节
-- 把控节奏和悬念
 
-你的工作原则：
-1. 一切创作必须基于已定稿的世界观，不可矛盾
-2. 角色随故事发展自然成长变化
-3. 每一章都要有看点和钩子
-4. 尊重用户的创作意图，提供专业建议但以用户为准
-"""
-
-def resolve_model(model: str = "") -> str:
-    return model if model else DEFAULT_MODEL
-
-async def chat_stream(messages: list[dict], system_prompt: str | None = None, model: str = ""):
-    client = get_client()
-    use_model = resolve_model(model)
-    t0 = time.time()
-    logger.info("[chat_stream] request started, model=%s, messages=%d", use_model, len(messages))
+async def chat_stream(messages: list[dict], system_prompt: str | None = None, model: str = "", temperature: float = 0.8):
+    client = _get_client()
+    sys = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+    full_messages = [{"role": "system", "content": sys}] + messages
     stream = await client.chat.completions.create(
-        model=use_model,
-        temperature=0.8,
-        messages=[
-            {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
-            *messages,
-        ],
+        model=model or DEFAULT_MODEL,
+        messages=full_messages,
         stream=True,
+        temperature=temperature,
+        max_tokens=LLM_MAX_TOKENS,
     )
-    t1 = time.time()
-    logger.info("[chat_stream] first response from LLM in %.2fs", t1 - t0)
-    chunk_count = 0
-    total_chars = 0
     async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        if delta.content:
-            chunk_count += 1
-            total_chars += len(delta.content)
-            yield delta.content
-    t2 = time.time()
-    logger.info("[chat_stream] finished: %d chunks, %d chars, total %.2fs (generate %.2fs)", chunk_count, total_chars, t2 - t0, t2 - t1)
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
 
-async def chat_text(messages: list[dict], system_prompt: str | None = None, model: str = "") -> str:
-    client = get_client()
-    use_model = resolve_model(model)
-    response = await client.chat.completions.create(
-        model=use_model,
-        temperature=0.8,
-        messages=[
-            {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
-            *messages,
-        ],
-    )
-    return response.choices[0].message.content
 
-async def chat_json(messages: list[dict], system_prompt: str | None = None, model: str = "") -> dict:
-    client = get_client()
-    use_model = resolve_model(model)
-    response = await client.chat.completions.create(
-        model=use_model,
-        temperature=0.5,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
-            *messages,
-        ],
-    )
-    return json.loads(response.choices[0].message.content)
+async def chat_text(messages: list[dict], system_prompt: str | None = None, model: str = "", temperature: float = 0.8) -> str:
+    last_err = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            client = _get_client()
+            sys = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+            full_messages = [{"role": "system", "content": sys}] + messages
+            response = await client.chat.completions.create(
+                model=model or DEFAULT_MODEL,
+                messages=full_messages,
+                temperature=temperature,
+                max_tokens=LLM_MAX_TOKENS,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            last_err = e
+            is_auth = "401" in str(e) or "auth" in str(e).lower()
+            if is_auth and attempt == 0:
+                raise
+            if attempt < LLM_MAX_RETRIES - 1 and not is_auth:
+                wait = (2 ** attempt) * 3 + asyncio.get_event_loop().time() % 2
+                logger.warning("LLM chat_text failed (attempt %d/%d), retry in %.1fs: %s", attempt + 1, LLM_MAX_RETRIES, wait, e)
+                await asyncio.sleep(wait)
+            else:
+                logger.error("LLM chat_text failed after %d attempts: %s", LLM_MAX_RETRIES, e)
+    raise last_err
+
+
+async def chat_json(messages: list[dict], system_prompt: str | None = None, model: str = "", temperature: float = 0.5) -> dict:
+    last_err = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            client = _get_client()
+            sys = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+            full_messages = [{"role": "system", "content": sys}] + messages
+            response = await client.chat.completions.create(
+                model=model or DEFAULT_MODEL,
+                messages=full_messages,
+                response_format={"type": "json_object"},
+                temperature=temperature,
+                max_tokens=LLM_MAX_TOKENS,
+            )
+            content = response.choices[0].message.content or ""
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            last_err = e
+            logger.warning("LLM returned invalid JSON (attempt %d/%d): %s", attempt + 1, LLM_MAX_RETRIES, str(e)[:200])
+            if attempt < LLM_MAX_RETRIES - 1:
+                await asyncio.sleep(2 ** attempt)
+            else:
+                return {"error": "json_parse_failed", "raw": content[:500] if 'content' in dir() else ""}
+        except Exception as e:
+            last_err = e
+            is_auth = "401" in str(e) or "auth" in str(e).lower()
+            if is_auth and attempt == 0:
+                raise
+            if attempt < LLM_MAX_RETRIES - 1 and not is_auth:
+                wait = (2 ** attempt) * 3
+                logger.warning("LLM chat_json failed (attempt %d/%d), retry in %.1fs: %s", attempt + 1, LLM_MAX_RETRIES, wait, e)
+                await asyncio.sleep(wait)
+            else:
+                logger.error("LLM chat_json failed after %d attempts: %s", LLM_MAX_RETRIES, e)
+    raise last_err if last_err else RuntimeError("LLM call failed")

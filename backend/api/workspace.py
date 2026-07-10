@@ -1,44 +1,190 @@
-import asyncio
-import json
 import uuid
-from typing import Optional
-
+import json
+import asyncio
+import logging
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from typing import Literal
 
-from backend.database import get_db
-from backend.agents.chronicle import update_chronicle
+from backend.database import get_db, fetch_all, fetch_one
 from backend.agents.base import chat_text, chat_json
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api")
+
+_background_tasks: set = set()
+
+VALID_STATUS = {"draft", "finalized", "locked"}
+VALID_ITEM_TYPES = {
+    "story_core", "world_setting", "character_setting",
+    "outline", "outline_reverse", "foreshadow",
+    "chapter_plan", "chapter",
+}
+STATUS_TRANSITIONS = {
+    "draft": {"finalized", "locked"},
+    "finalized": {"locked", "draft"},
+    "locked": {"draft"},
+}
+
+SUMMARIZE_MSG_PROMPTS = {
+    "world_setting": """你是一个小说世界观设定整理助手。请将以下对话内容整理为结构化的世界观设定文档。
+
+要求：
+1. 提取核心设定，去除对话中的冗余内容
+2. 用 Markdown 格式，以 ## 副标题开头组织各部分
+3. 保持逻辑清晰，分类明确
+
+返回 JSON 格式：
+{
+  "subtitle": "概括性副标题（2-6个字）",
+  "content": "整理后的 Markdown 内容（以 ## 副标题开头）"
+}""",
+    "character_setting": """你是一个小说角色设定整理助手。请将以下对话内容整理为结构化的角色设定。
+
+要求：
+1. 提取角色的关键设定信息
+2. 用 Markdown 格式组织
+3. 包含外貌、性格、背景、能力等维度
+
+返回 JSON 格式：
+{
+  "subtitle": "角色名或概括（2-6个字）",
+  "content": "整理后的 Markdown 内容（以 ## 副标题开头）"
+}""",
+    "outline": """你是一个小说大纲整理助手。请将以下对话内容整理为结构化的大纲。
+
+要求：
+1. 提取情节脉络和关键节点
+2. 用 Markdown 格式组织
+3. 按章节或卷划分
+
+返回 JSON 格式：
+{
+  "subtitle": "大纲概括（2-6个字）",
+  "content": "整理后的 Markdown 内容（以 ## 副标题开头）"
+}""",
+    "chapter": """你是一个小说章节整理助手。请将以下内容整理为正式的章节正文。
+
+要求：
+1. 保持文学性和可读性
+2. 修正格式和排版
+
+返回 JSON 格式：
+{
+  "subtitle": "章节标题",
+  "content": "整理后的正文"
+}""",
+}
+
+SYNC_WORKSPACE_PROMPT = """你是一个小说创作工作台同步助手。请对比 AI 的最新回复与已有工作台条目，找出需要更新的内容。
+
+判断规则：
+1. 如果 AI 回复中包含对已有条目的补充或修正，标记为 "update"
+2. 如果 AI 回复中包含全新的设定信息，标记为 "create"
+3. 如果不确定，标记为 "suggest"
+
+返回 JSON 格式：
+{
+  "updates": [
+    {"item_id": "已有条目ID", "action": "update", "new_content": "追加或替换的内容", "reason": "原因"}
+  ],
+  "suggestions": [
+    {"item_type": "world_setting", "title": "建议标题", "content": "内容", "reason": "原因"}
+  ]
+}"""
+
+INSPIRATION_PROMPT = """你是一个小说创作灵感整理助手。请从以下用户消息中提取所有有价值的创作灵感和设定信息。
+
+要求：
+1. 提取所有关于世界观、角色、情节的设定信息
+2. 合并重复内容
+3. 用 Markdown 格式输出
+
+返回 JSON 格式：
+{
+  "subtitle": "灵感概括（2-6个字）",
+  "content": "整理后的 Markdown 内容"
+}"""
+
+EXTRACT_QUESTIONS_PROMPT = """你是一个小说创作助手。请分析当前项目状态，找出需要用户确认的关键问题。
+
+要求：
+1. 只提出对创作有实质影响的问题
+2. 每个问题提供2-4个选项建议
+3. 不要超过 6 个问题
+
+返回 JSON 格式：
+{
+  "questions": [
+    {
+      "id": "q1",
+      "question": "问题内容",
+      "context": "为什么需要确认这个问题",
+      "options": ["选项1", "选项2", "选项3"]
+    }
+  ]
+}"""
 
 
 class WorkspaceItemCreate(BaseModel):
-    item_type: str
-    title: str
+    item_type: Literal[
+        "story_core", "world_setting", "character_setting",
+        "outline", "outline_reverse", "foreshadow",
+        "chapter_plan", "chapter",
+    ]
+    title: str = ""
     subtitle: str = ""
     content: str = ""
-    chapter_number: Optional[int] = None
+    metadata: dict = {}
+    chapter_number: int | None = None
+    status: str = "draft"
 
 
 class WorkspaceItemUpdate(BaseModel):
-    title: Optional[str] = None
-    subtitle: Optional[str] = None
-    content: Optional[str] = None
+    title: str | None = None
+    subtitle: str | None = None
+    content: str | None = None
+    metadata: dict | None = None
+
+
+_WS_ALLOWED_FIELDS = {"title", "subtitle", "content", "metadata"}
 
 
 class StatusUpdate(BaseModel):
-    status: str
+    status: Literal["draft", "finalized", "locked"]
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        if v not in VALID_STATUS:
+            raise ValueError(f"Invalid status: {v}")
+        return v
+
+
+class SummarizeMessageRequest(BaseModel):
+    content: str
+    item_type: str
+
+
+class SyncRequest(BaseModel):
+    ai_message: str
+    workspace_items: list[dict]
+
+
+class GenerateItemRequest(BaseModel):
+    item_type: str
+    conversation_history: list[dict] = []
 
 
 @router.get("/projects/{project_id}/workspace")
 async def list_workspace_items(project_id: str):
     db = await get_db()
-    cursor = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE project_id = ? ORDER BY sort_order",
+    rows = await fetch_all(
+        db,
+        "SELECT * FROM workspace_items WHERE project_id = ? ORDER BY sort_order ASC, created_at ASC",
         (project_id,),
     )
-    return [dict(row) for row in cursor]
+    return rows
 
 
 @router.post("/projects/{project_id}/workspace")
@@ -47,474 +193,395 @@ async def create_workspace_item(project_id: str, body: WorkspaceItemCreate):
     item_id = str(uuid.uuid4())
 
     if body.item_type == "chapter":
-        cursor = await db.execute_fetchall(
-            "SELECT MAX(chapter_number) as max_cn FROM workspace_items WHERE project_id = ? AND item_type = 'chapter'",
-            (project_id,),
-        )
-        max_cn = cursor[0]["max_cn"]
-        chapter_number = (max_cn or 0) + 1
+        if body.chapter_number is None:
+            row = await fetch_one(
+                db,
+                "SELECT MAX(chapter_number) as mx FROM workspace_items WHERE project_id = ? AND item_type = 'chapter'",
+                (project_id,),
+            )
+            chapter_number = (row["mx"] or 0) + 1 if row else 1
+        else:
+            chapter_number = body.chapter_number
     else:
-        chapter_number = body.chapter_number
+        chapter_number = None
 
-    cursor = await db.execute_fetchall(
-        "SELECT MAX(sort_order) as max_so FROM workspace_items WHERE project_id = ?",
+    sort_row = await fetch_one(
+        db,
+        "SELECT MAX(sort_order) as mx FROM workspace_items WHERE project_id = ?",
         (project_id,),
     )
-    max_so = cursor[0]["max_so"]
-    sort_order = (max_so or 0) + 1
+    sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
 
+    metadata_json = json.dumps(body.metadata, ensure_ascii=False)
     await db.execute(
-        """INSERT INTO workspace_items (id, project_id, item_type, status, title, subtitle, content, chapter_number, sort_order)
-        VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)""",
-        (item_id, project_id, body.item_type, body.title, getattr(body, 'subtitle', '') or '', body.content, chapter_number, sort_order),
+        """INSERT INTO workspace_items (id, project_id, item_type, status, title, subtitle, content, metadata, chapter_number, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (item_id, project_id, body.item_type, body.status, body.title, body.subtitle, body.content, metadata_json, chapter_number, sort_order),
     )
+    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
     await db.commit()
 
-    cursor = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE id = ?", (item_id,),
-    )
-    return dict(cursor[0])
-
-
-EXTRACT_QUESTIONS_PROMPT = """你是一位细心的小说创作助手。用户会给你一段他们在对话中说过的话。
-
-你的任务：找出用户提到的每一个**关键名词、概念、设定**，如果这个名词/概念在小说创作中还有可发挥空间、需要进一步明确，就针对它生成一个反向确认问题，并给出 2-3 个建议选项。
-
-规则：
-1. 只针对用户提到的具体名词/概念提问，不要泛泛而问
-2. 每个问题给出 2-3 个常见/有创意的选项建议，方便用户快速选择
-3. 如果用户说的信息已经很完整，没有需要确认的，返回空数组
-4. 不要超过 6 个问题
-
-返回 JSON 格式：
-{
-  "questions": [
-    {
-      "keyword": "剑修",
-      "question": "剑修的修炼体系有几个大境界？",
-      "options": ["三境（练气、筑基、金丹）", "五境（练气、筑基、金丹、元婴、化神）", "九境（完整的修仙体系）"]
-    },
-    ...
-  ]
-}
-
-如果没有任何需要确认的内容，返回：{"questions": []}"""
-
-
-class ExtractQuestionsRequest(BaseModel):
-    user_messages: list[str]
-
-
-@router.post("/projects/{project_id}/extract-questions")
-async def extract_questions(project_id: str, body: ExtractQuestionsRequest):
-    combined = "\n\n".join(f"用户说：{msg}" for msg in body.user_messages)
-    result = await chat_json(
-        messages=[{"role": "user", "content": combined}],
-        system_prompt=EXTRACT_QUESTIONS_PROMPT,
-    )
-    return result
-
-
-class GenerateItemRequest(BaseModel):
-    item_type: str
-    conversation_messages: list[dict]
-
-
-WORLD_SETTING_PROMPT = """你是一位专业的小说世界观设定师。根据用户和AI的对话历史，提取并整理出一份完整的世界观设定文档。
-
-要求：
-1. 从对话中提取所有与世界观相关的信息（地理、势力、规则、历史等）
-2. 如果信息不完整，根据已有线索合理补充，但标注为「待确认」
-3. 用结构化的格式组织（使用标题、列表等）
-4. 输出 Markdown 格式
-5. 直接输出内容，不要加前缀说明"""
-
-CHARACTER_SETTING_PROMPT = """你是一位专业的小说角色设计师。根据用户和AI的对话历史，提取并整理出角色设定文档。
-
-要求：
-1. 从对话中提取所有角色相关信息（姓名、外貌、性格、能力、背景、人际关系等）
-2. 如果信息不完整，根据已有线索合理补充，但标注为「待确认」
-3. 每个角色一个独立章节，包含：基本信息、性格特点、能力设定、人物关系、背景故事
-4. 输出 Markdown 格式
-5. 直接输出内容，不要加前缀说明"""
-
-OUTLINE_PROMPT = """你是一位专业的小说大纲策划师。根据用户和AI的对话历史，提取并整理出故事大纲文档。
-
-要求：
-1. 从对话中提取所有与剧情相关的内容（主线、支线、关键事件、转折点等）
-2. 按时间线或章节结构组织
-3. 如果信息不完整，根据已有线索合理补充，但标注为「待确认」
-4. 输出 Markdown 格式
-5. 直接输出内容，不要加前缀说明"""
-
-ITEM_TYPE_PROMPTS = {
-    "world_setting": WORLD_SETTING_PROMPT,
-    "character_setting": CHARACTER_SETTING_PROMPT,
-    "outline": OUTLINE_PROMPT,
-}
-
-ITEM_TYPE_TITLES = {
-    "world_setting": "世界观设定",
-    "character_setting": "角色设定",
-    "outline": "故事大纲",
-}
-
-
-SUMMARIZE_MSG_PROMPTS = {
-    "world_setting": """你是一位专业的小说世界观设定师。请从以下AI回复内容中，提取并整理出世界观相关的设定信息。
-
-要求：
-1. 提取所有与世界观相关的信息（地理、势力、规则、历史、修炼体系等）
-2. 用结构化的格式组织（使用标题、列表等）
-3. 只提取内容中明确提到的信息，不要补充
-4. 输出 Markdown 格式，直接输出内容
-5. 第一行必须是 ## 级别的标题，概括这段设定的核心主题（如"## 灵气体系"、"## 三大帝国"），不要用 # 一级标题
-
-返回 JSON 格式：
-{
-  "subtitle": "概括性副标题（2-6个字，如：灵气体系、三大帝国、门派势力）",
-  "content": "整理后的 Markdown 内容（以 ## 副标题开头）"
-}""",
-
-    "character_setting": """你是一位专业的小说角色设计师。请从以下AI回复内容中，提取并整理出角色相关的设定信息。
-
-要求：
-1. 提取所有角色相关信息（姓名、外貌、性格、能力、背景、人际关系等）
-2. 每个角色一个独立章节
-3. 只提取内容中明确提到的信息，不要补充
-4. 输出 Markdown 格式，直接输出内容
-5. 第一行必须是 ## 级别的标题，概括这段设定的核心主题
-
-返回 JSON 格式：
-{
-  "subtitle": "概括性副标题（2-6个字，如：主角团、反派势力、配角群像）",
-  "content": "整理后的 Markdown 内容（以 ## 副标题开头）"
-}""",
-
-    "outline": """你是一位专业的小说大纲策划师。请从以下AI回复内容中，提取并整理出剧情大纲相关的信息。
-
-要求：
-1. 提取所有与剧情相关的内容（主线、支线、关键事件、转折点等）
-2. 按时间线或章节结构组织
-3. 只提取内容中明确提到的信息，不要补充
-4. 输出 Markdown 格式，直接输出内容
-5. 第一行必须是 ## 级别的标题，概括这段剧情的核心主题
-
-返回 JSON 格式：
-{
-  "subtitle": "概括性副标题（2-6个字，如：开局篇、转折点、高潮章节）",
-  "content": "整理后的 Markdown 内容（以 ## 副标题开头）"
-}""",
-}
-
-
-class SummarizeMessageRequest(BaseModel):
-    content: str
-    item_type: str
-
-
-@router.post("/projects/{project_id}/summarize-message")
-async def summarize_message(project_id: str, body: SummarizeMessageRequest):
-    prompt = SUMMARIZE_MSG_PROMPTS.get(body.item_type, SUMMARIZE_MSG_PROMPTS["world_setting"])
-    title = ITEM_TYPE_TITLES.get(body.item_type, "设定")
-
-    result = await chat_text(
-        messages=[{"role": "user", "content": body.content}],
-        system_prompt=prompt,
-    )
-
-    subtitle = ""
-    content = result
-    try:
-        import json
-        parsed = json.loads(result)
-        if isinstance(parsed, dict):
-            subtitle = parsed.get("subtitle", "")
-            content = parsed.get("content", result)
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    return {"title": title, "content": content, "subtitle": subtitle, "item_type": body.item_type}
-
-
-class SyncToWorkspaceRequest(BaseModel):
-    ai_message: str
-    workspace_items: list[dict]
-
-
-SYNC_TO_WORKSPACE_PROMPT = """你是一位细心的小说设定管理员。用户和AI的对话中讨论了对已有设定的修改。
-
-你的任务：
-1. 阅读AI的回复内容，识别其中对已有设定做了哪些**修改、补充、覆盖**
-2. 将这些变更合并到对应的已有条目中，生成更新后的完整内容
-3. 如果AI回复中提到了全新的、不涉及已有条目的信息，也可以建议创建新条目
-
-注意：
-- 只修改确实有变化的部分，不要改无关内容
-- 合并时保留原有结构，只替换/补充变化的部分
-- 如果有矛盾（旧设定说A，新内容说B），以新内容为准
-
-返回 JSON 格式：
-{
-  "updates": [
-    {
-      "item_id": "已有条目的id",
-      "item_title": "条目标题",
-      "changes_summary": "简述改了什么（一句话）",
-      "updated_content": "合并后的完整内容（Markdown格式）"
+    return {
+        "id": item_id,
+        "project_id": project_id,
+        "item_type": body.item_type,
+        "status": body.status,
+        "title": body.title,
+        "subtitle": body.subtitle,
+        "metadata": body.metadata,
+        "content": body.content,
+        "chapter_number": chapter_number,
+        "sort_order": sort_order,
     }
-  ],
-  "suggestions": [
-    {
-      "title": "新条目标题",
-      "subtitle": "副标题",
-      "item_type": "world_setting|character_setting|outline",
-      "content": "新条目内容",
-      "reason": "为什么建议创建这个新条目"
-    }
-  ]
-}
-
-如果没有任何需要更新的内容，返回：{"updates": [], "suggestions": []}"""
-
-
-@router.post("/projects/{project_id}/sync-workspace")
-async def sync_to_workspace(project_id: str, body: SyncToWorkspaceRequest):
-    items_text = "\n\n".join(
-        f"【条目ID: {item.get('id', '')}】【标题: {item.get('title', '')}】【副标题: {item.get('subtitle', '')}】\n{item.get('content', '')}"
-        for item in body.workspace_items
-    )
-
-    user_content = f"以下是工作台已有条目：\n\n{items_text}\n\n---\n\n以下是AI的最新回复（可能包含对上述条目的修改）：\n\n{body.ai_message}"
-
-    result = await chat_json(
-        messages=[{"role": "user", "content": user_content}],
-        system_prompt=SYNC_TO_WORKSPACE_PROMPT,
-    )
-
-    return result
-
-
-@router.post("/projects/{project_id}/generate-item")
-async def generate_workspace_item(project_id: str, body: GenerateItemRequest):
-    prompt = ITEM_TYPE_PROMPTS.get(body.item_type, WORLD_SETTING_PROMPT)
-    title = ITEM_TYPE_TITLES.get(body.item_type, "设定")
-
-    conversation_text = "\n\n".join(
-        f"{'用户' if m.get('role') == 'user' else 'AI'}：{m.get('content', '')}"
-        for m in body.conversation_messages
-    )
-
-    result = await chat_text(
-        messages=[{"role": "user", "content": f"以下是对话历史：\n\n{conversation_text}"}],
-        system_prompt=prompt,
-    )
-
-    return {"title": title, "content": result, "item_type": body.item_type}
 
 
 @router.put("/workspace/{item_id}")
 async def update_workspace_item(item_id: str, body: WorkspaceItemUpdate):
     db = await get_db()
-
-    cursor = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE id = ?", (item_id,),
-    )
-    if not cursor:
+    item = await fetch_one(db, "SELECT * FROM workspace_items WHERE id = ?", (item_id,))
+    if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-
-    item = dict(cursor[0])
     if item["status"] == "locked":
-        raise HTTPException(status_code=400, detail="Item is locked and cannot be edited")
+        raise HTTPException(status_code=409, detail="Item is locked and cannot be edited")
 
-    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    fields = {k: v for k, v in body.model_dump().items() if v is not None and k in _WS_ALLOWED_FIELDS}
     if not fields:
-        raise HTTPException(status_code=400, detail="No fields to update")
+        return item
+
+    if "metadata" in fields:
+        fields["metadata"] = json.dumps(fields["metadata"], ensure_ascii=False)
 
     set_parts = [f"{k} = ?" for k in fields]
     values = list(fields.values())
-    set_parts.append("updated_at = datetime('now')")
+    values.append(item_id)
 
     await db.execute(
-        f"UPDATE workspace_items SET {', '.join(set_parts)} WHERE id = ?",
-        values + [item_id],
+        f"UPDATE workspace_items SET {', '.join(set_parts)}, updated_at = datetime('now') WHERE id = ?",
+        values,
     )
+    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (item["project_id"],))
     await db.commit()
 
-    cursor = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE id = ?", (item_id,),
-    )
-    return dict(cursor[0])
+    updated = await fetch_one(db, "SELECT * FROM workspace_items WHERE id = ?", (item_id,))
+    return updated
 
 
 @router.put("/workspace/{item_id}/status")
 async def update_item_status(item_id: str, body: StatusUpdate):
     db = await get_db()
-
-    cursor = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE id = ?", (item_id,),
-    )
-    if not cursor:
+    item = await fetch_one(db, "SELECT * FROM workspace_items WHERE id = ?", (item_id,))
+    if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    item = dict(cursor[0])
+    current_status = item["status"]
+    new_status = body.status
+
+    if current_status != new_status:
+        allowed = STATUS_TRANSITIONS.get(current_status, set())
+        if new_status not in allowed:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot transition from '{current_status}' to '{new_status}'",
+            )
 
     await db.execute(
         "UPDATE workspace_items SET status = ?, updated_at = datetime('now') WHERE id = ?",
-        (body.status, item_id),
+        (new_status, item_id),
     )
+    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (item["project_id"],))
     await db.commit()
 
-    if item["item_type"] == "chapter" and body.status == "finalized":
-        asyncio.create_task(
-            _trigger_chronicle_update(item["project_id"], item["title"], item["content"])
+    if item["item_type"] == "chapter" and new_status in ("finalized", "locked"):
+        task = asyncio.create_task(
+            _trigger_chronicle_update(item["project_id"], item["title"] or "", item["content"] or "")
         )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
-    cursor = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE id = ?", (item_id,),
-    )
-    return dict(cursor[0])
-
-
-async def _trigger_chronicle_update(project_id: str, chapter_title: str, chapter_content: str):
-    db = await get_db()
-    try:
-        chronicle_cursor = await db.execute_fetchall(
-            "SELECT * FROM chronicle WHERE project_id = ?", (project_id,),
-        )
-        current_chronicle = dict(chronicle_cursor[0]) if chronicle_cursor else {}
-
-        world_cursor = await db.execute_fetchall(
-            "SELECT content FROM workspace_items WHERE project_id = ? AND item_type = 'world_setting' AND status = 'locked' LIMIT 1",
-            (project_id,),
-        )
-        world_setting = dict(world_cursor[0])["content"] if world_cursor else ""
-
-        chronicle_data = {}
-        for key in ["timeline", "characters", "key_events", "unresolved_threads"]:
-            raw = current_chronicle.get(key, "[]")
-            chronicle_data[key] = json.loads(raw) if isinstance(raw, str) else raw
-
-        result = await update_chronicle(
-            chronicle_data, chapter_title, chapter_content, world_setting
-        )
-
-        await db.execute(
-            """INSERT INTO chronicle (project_id, timeline, characters, key_events, unresolved_threads, raw_text, updated_at)
-            VALUES (?, ?, ?, ?, ?, '', datetime('now'))
-            ON CONFLICT(project_id) DO UPDATE SET
-                timeline = excluded.timeline,
-                characters = excluded.characters,
-                key_events = excluded.key_events,
-                unresolved_threads = excluded.unresolved_threads,
-                raw_text = excluded.raw_text,
-                updated_at = datetime('now')""",
-            (
-                project_id,
-                json.dumps(result.get("timeline", []), ensure_ascii=False),
-                json.dumps(result.get("characters", []), ensure_ascii=False),
-                json.dumps(result.get("key_events", []), ensure_ascii=False),
-                json.dumps(result.get("unresolved_threads", []), ensure_ascii=False),
-            ),
-        )
-        await db.commit()
-    except Exception as e:
-        print(f"Chronicle update failed: {e}")
+    updated = await fetch_one(db, "SELECT * FROM workspace_items WHERE id = ?", (item_id,))
+    return updated
 
 
 @router.delete("/workspace/{item_id}")
 async def delete_workspace_item(item_id: str):
     db = await get_db()
-
-    cursor = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE id = ?", (item_id,),
-    )
-    if not cursor:
+    item = await fetch_one(db, "SELECT * FROM workspace_items WHERE id = ?", (item_id,))
+    if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-
-    item = dict(cursor[0])
     if item["status"] == "locked":
-        raise HTTPException(status_code=400, detail="Item is locked and cannot be deleted")
+        raise HTTPException(status_code=409, detail="Item is locked and cannot be deleted")
 
     await db.execute("DELETE FROM workspace_items WHERE id = ?", (item_id,))
+    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (item["project_id"],))
     await db.commit()
     return {"ok": True}
 
 
-class SummarizeRequest(BaseModel):
-    content: str
-    item_type: str = "world_setting"
-    title: str = ""
+@router.post("/projects/{project_id}/summarize-message")
+async def summarize_message(project_id: str, body: SummarizeMessageRequest):
+    prompt = SUMMARIZE_MSG_PROMPTS.get(body.item_type)
+    if not prompt:
+        raise HTTPException(status_code=400, detail=f"Unknown item type: {body.item_type}")
 
+    result = await chat_json(
+        messages=[{"role": "user", "content": body.content}],
+        system_prompt=prompt,
+        temperature=0.3,
+    )
 
-SUMMARIZE_PROMPT = """你是一位专业的小说创作助手。用户会给你一段他们的想法、灵感或创意描述。请将其整理为一份结构清晰、内容完整的创作设定文档。
+    if "error" in result:
+        raise HTTPException(status_code=502, detail="AI 返回格式错误，请重试")
 
-要求：
-1. 保留用户的所有核心创意和关键信息
-2. 用结构化的方式组织内容（使用 ## 标题、列表等）
-3. 补充合理的细节，但不改变用户的原始意图
-4. 语言精炼、适合直接作为创作参考
-5. 第一行必须是 ## 级别的标题，概括这段灵感的核心主题
-6. 不要用 # 一级标题，统一从 ## 开始
-
-返回 JSON 格式：
-{
-  "subtitle": "概括性副标题（2-6个字）",
-  "content": "整理后的 Markdown 内容（以 ## 副标题开头）"
-}"""
+    subtitle = result.get("subtitle", "")
+    content = result.get("content", "")
+    db = await get_db()
+    existing = await fetch_one(
+        db,
+        "SELECT id, title, subtitle, content FROM workspace_items WHERE project_id = ? AND item_type = ? ORDER BY sort_order LIMIT 1",
+        (project_id, body.item_type),
+    )
+    return {
+        "item_type": body.item_type,
+        "subtitle": subtitle,
+        "content": content,
+        "existing": existing,
+    }
 
 
 @router.post("/projects/{project_id}/summarize")
-async def summarize_to_workspace(project_id: str, body: SummarizeRequest):
+async def summarize_to_workspace(project_id: str):
     db = await get_db()
+    rows = await fetch_all(
+        db,
+        "SELECT role, content FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE c.project_id = ? AND m.role = 'user' ORDER BY m.created_at",
+        (project_id,),
+    )
+    if not rows:
+        raise HTTPException(status_code=400, detail="没有用户消息可整理")
 
-    result = await chat_text(
-        messages=[{"role": "user", "content": body.content}],
-        system_prompt=SUMMARIZE_PROMPT,
+    all_text = "\n\n".join(r["content"] for r in rows)
+
+    result = await chat_json(
+        messages=[{"role": "user", "content": all_text}],
+        system_prompt=INSPIRATION_PROMPT,
+        temperature=0.5,
     )
 
-    subtitle = ""
-    content = result
-    try:
-        import json
-        parsed = json.loads(result)
-        if isinstance(parsed, dict):
-            subtitle = parsed.get("subtitle", "")
-            content = parsed.get("content", result)
-    except (json.JSONDecodeError, TypeError):
-        pass
+    if "error" in result:
+        raise HTTPException(status_code=502, detail="AI 返回格式错误，请重试")
 
-    title = body.title or "灵感笔记"
-    item_type = body.item_type or "world_setting"
+    subtitle = result.get("subtitle", "灵感笔记")
+    content = result.get("content", "")
 
-    existing = await db.execute_fetchall(
-        "SELECT * FROM workspace_items WHERE project_id = ? AND item_type = ? ORDER BY sort_order LIMIT 1",
-        (project_id, item_type),
+    existing = await fetch_one(
+        db,
+        "SELECT id, title, content FROM workspace_items WHERE project_id = ? AND item_type = 'world_setting' ORDER BY sort_order LIMIT 1",
+        (project_id,),
     )
 
     if existing:
-        row = dict(existing[0])
-        new_content = (row["content"] or "").rstrip() + "\n\n" + content
+        old_content = (existing["content"] or "").rstrip()
+        max_length = 50000
+        if len(old_content) > max_length:
+            old_content = old_content[-max_length:]
+        new_content = old_content + "\n\n" + f"## {subtitle}\n\n{content}"
         await db.execute(
-            "UPDATE workspace_items SET content = ?, subtitle = '' WHERE id = ?",
-            (new_content, row["id"]),
+            "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+            (new_content, existing["id"]),
         )
         await db.commit()
-        cursor = await db.execute_fetchall("SELECT * FROM workspace_items WHERE id = ?", (row["id"],))
-        return dict(cursor[0])
+        return {"id": existing["id"], "action": "appended", "subtitle": subtitle}
     else:
         item_id = str(uuid.uuid4())
-        cursor = await db.execute_fetchall(
-            "SELECT MAX(sort_order) as max_so FROM workspace_items WHERE project_id = ?",
+        sort_row = await fetch_one(
+            db,
+            "SELECT MAX(sort_order) as mx FROM workspace_items WHERE project_id = ?",
             (project_id,),
         )
-        max_so = cursor[0]["max_so"]
-        sort_order = (max_so or 0) + 1
+        sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
+        full_content = f"## {subtitle}\n\n{content}"
         await db.execute(
             """INSERT INTO workspace_items (id, project_id, item_type, status, title, subtitle, content, sort_order)
-            VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)""",
-            (item_id, project_id, item_type, title, subtitle, content, sort_order),
+               VALUES (?, ?, 'world_setting', 'draft', ?, ?, ?, ?)""",
+            (item_id, project_id, "灵感笔记", subtitle, full_content, sort_order),
         )
+        await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
         await db.commit()
-        cursor = await db.execute_fetchall("SELECT * FROM workspace_items WHERE id = ?", (item_id,))
-        return dict(cursor[0])
+        return {"id": item_id, "action": "created", "subtitle": subtitle}
+
+
+@router.post("/projects/{project_id}/sync-workspace")
+async def sync_to_workspace(project_id: str, body: SyncRequest):
+    db = await get_db()
+    items_text = "\n\n".join(
+        f"[ID: {it.get('id','')}] 类型:{it.get('item_type','')} 标题:{it.get('title','')}\n{it.get('content','')}"
+        for it in body.workspace_items
+    )
+
+    user_content = f"已有条目：\n\n{items_text}\n\n---\n\nAI 的最新回复：\n\n{body.ai_message}"
+
+    result = await chat_json(
+        messages=[{"role": "user", "content": user_content}],
+        system_prompt=SYNC_WORKSPACE_PROMPT,
+        temperature=0.3,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=502, detail="AI 返回格式错误，请重试")
+
+    updates = result.get("updates", [])
+    suggestions = result.get("suggestions", [])
+
+    for upd in updates:
+        item_id = upd.get("item_id")
+        action = upd.get("action")
+        new_content = upd.get("new_content", "")
+        if action == "update" and item_id and new_content:
+            item = await fetch_one(db, "SELECT content, status FROM workspace_items WHERE id = ?", (item_id,))
+            if item and item["status"] != "locked":
+                merged = (item["content"] or "").rstrip() + "\n\n" + new_content
+                await db.execute(
+                    "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+                    (merged, item_id),
+                )
+
+    for sug in suggestions:
+        item_type = sug.get("item_type", "world_setting")
+        title = sug.get("title", "")
+        content = sug.get("content", "")
+        if content:
+            item_id = str(uuid.uuid4())
+            sort_row = await fetch_one(
+                db,
+                "SELECT MAX(sort_order) as mx FROM workspace_items WHERE project_id = ?",
+                (project_id,),
+            )
+            sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
+            await db.execute(
+                """INSERT INTO workspace_items (id, project_id, item_type, status, title, content, sort_order)
+                   VALUES (?, ?, ?, 'draft', ?, ?, ?)""",
+                (item_id, project_id, item_type, title, content, sort_order),
+            )
+
+    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
+    await db.commit()
+
+    return {"updates": updates, "suggestions": suggestions}
+
+
+@router.post("/projects/{project_id}/generate-item")
+async def generate_item(project_id: str, body: GenerateItemRequest):
+    history_text = "\n".join(
+        f"{'用户' if m.get('role') == 'user' else '助手'}: {m.get('content', '')}"
+        for m in body.conversation_history[-20:]
+    )
+
+    prompt = f"请根据以下对话历史，生成一份{body.item_type}的内容。用 Markdown 格式输出。\n\n对话历史：\n{history_text}"
+
+    content = await chat_text(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+    )
+
+    return {"item_type": body.item_type, "content": content}
+
+
+@router.post("/projects/{project_id}/extract-questions")
+async def extract_questions(project_id: str):
+    db = await get_db()
+    items = await fetch_all(
+        db,
+        "SELECT item_type, title, content, status FROM workspace_items WHERE project_id = ? ORDER BY sort_order",
+        (project_id,),
+    )
+
+    context = "\n\n".join(
+        f"[{it['item_type']}] {it['title'] or ''} ({it['status']})\n{(it['content'] or '')[:500]}"
+        for it in items
+    )
+
+    if not context.strip():
+        return {"questions": []}
+
+    result = await chat_json(
+        messages=[{"role": "user", "content": f"当前项目设定：\n\n{context}"}],
+        system_prompt=EXTRACT_QUESTIONS_PROMPT,
+        temperature=0.5,
+    )
+
+    if "error" in result:
+        return {"questions": []}
+
+    return {"questions": result.get("questions", [])}
+
+
+async def _trigger_chronicle_update(project_id: str, chapter_title: str, chapter_content: str):
+    try:
+        from backend.agents.chronicle import update_chronicle
+
+        db = await get_db()
+
+        chronicle_row = await fetch_one(
+            db,
+            "SELECT * FROM chronicle WHERE project_id = ?",
+            (project_id,),
+        )
+
+        world_rows = await fetch_all(
+            db,
+            "SELECT content FROM workspace_items WHERE project_id = ? AND item_type = 'world_setting' AND status IN ('locked', 'finalized')",
+            (project_id,),
+        )
+        world_text = "\n\n".join(r["content"] for r in world_rows[:3]) if world_rows else ""
+
+        current = {
+            "timeline": json.loads(chronicle_row["timeline"]) if chronicle_row and chronicle_row["timeline"] else [],
+            "characters": json.loads(chronicle_row["characters"]) if chronicle_row and chronicle_row["characters"] else [],
+            "key_events": json.loads(chronicle_row["key_events"]) if chronicle_row and chronicle_row["key_events"] else [],
+            "unresolved_threads": json.loads(chronicle_row["unresolved_threads"]) if chronicle_row and chronicle_row["unresolved_threads"] else [],
+        }
+
+        updated = await update_chronicle(
+            current,
+            chapter_title,
+            chapter_content,
+            world_text,
+        )
+
+        if chronicle_row:
+            raw_parts = []
+            for tl in updated.get("timeline", []):
+                raw_parts.append(f"[{tl.get('time','')}] {tl.get('event','')}")
+            raw_text = "\n".join(raw_parts)
+
+            await db.execute(
+                """UPDATE chronicle SET timeline = ?, characters = ?, key_events = ?, unresolved_threads = ?, raw_text = ?, updated_at = datetime('now')
+                   WHERE project_id = ?""",
+                (
+                    json.dumps(updated.get("timeline", []), ensure_ascii=False),
+                    json.dumps(updated.get("characters", []), ensure_ascii=False),
+                    json.dumps(updated.get("key_events", []), ensure_ascii=False),
+                    json.dumps(updated.get("unresolved_threads", []), ensure_ascii=False),
+                    raw_text,
+                    project_id,
+                ),
+            )
+        else:
+            await db.execute(
+                """INSERT INTO chronicle (project_id, timeline, characters, key_events, unresolved_threads, raw_text)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    project_id,
+                    json.dumps(updated.get("timeline", []), ensure_ascii=False),
+                    json.dumps(updated.get("characters", []), ensure_ascii=False),
+                    json.dumps(updated.get("key_events", []), ensure_ascii=False),
+                    json.dumps(updated.get("unresolved_threads", []), ensure_ascii=False),
+                    "",
+                ),
+            )
+
+        await db.commit()
+        logger.info("Chronicle updated for project=%s chapter=%s", project_id, chapter_title)
+
+    except Exception as e:
+        logger.exception("Chronicle update failed for project=%s: %s", project_id, e)

@@ -1,5 +1,5 @@
 import {
-  getState, setState, subscribe,
+  getState, setState, subscribe, onError,
   fetchProjects, createProject, deleteProject,
   fetchConversations, createConversation, selectConversation, deleteConversation, renameConversation,
   sendMessage, regenerateMessage,
@@ -7,27 +7,15 @@ import {
   fetchChronicle,
   navigateTo,
   fetchAssistants, selectAssistant, createAssistant, updateAssistant, deleteAssistant,
+  fetchSkeleton, startGuide, sendGuideReply, closeGuide,
 } from './store.js'
 import { updateProject, summarizeToWorkspace, extractQuestions, generateWorkspaceItem, summarizeMessage, syncToWorkspace, updateWorkspaceItem } from './api.js'
 
 const html = (strings, ...values) => strings.reduce((acc, s, i) => acc + s + (values[i] ?? ''), '')
-const esc = s => s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''
+const esc = s => s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''
 
-const TYPE_LABELS = { world_setting: '世界观', character_setting: '角色', outline: '大纲', chapter: '章节' }
+const TYPE_LABELS = { story_core: '故事核', world_setting: '世界观', character_setting: '角色', outline: '正向大纲', outline_reverse: '倒推大纲', foreshadow: '伏笔', chapter_plan: '章纲', chapter: '章节' }
 const STATUS_LABELS = { draft: '草稿', finalized: '正文', locked: '锁定' }
-
-let _marked = null
-async function md(text) {
-  if (!text) return ''
-  if (!_marked) {
-    _marked = await import('https://cdn.jsdelivr.net/npm/marked/marked.min.js')
-  }
-  try {
-    return _marked.marked.parse(text)
-  } catch {
-    return esc(text).replace(/\n/g, '<br>')
-  }
-}
 
 function showToast(msg, type = 'info') {
   let box = document.querySelector('.toast-container')
@@ -150,6 +138,7 @@ function renderWorkspacePage(app, s) {
         </div>
       </div>
       <div class="workspace-panel">
+        ${renderSkeletonPanel(s)}
         ${s.pendingQuestions.length > 0 ? html`
           <div style="padding:12px 16px;border-bottom:1px solid var(--border-color);background:var(--accent-light);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
@@ -190,6 +179,7 @@ function renderWorkspacePage(app, s) {
       <button data-action="mobile-show-chat" class="${!s._mobileTab ? 'active' : ''}"><span>💬</span>对话</button>
       <button data-action="mobile-show-right" class="${s._mobileTab === 'right' ? 'active' : ''}"><span>📝</span>工作台</button>
     </div>
+    ${renderGuideModal(s)}
   </div>`
 }
 
@@ -304,11 +294,91 @@ function renderChronicle(chronicle) {
   return out
 }
 
+const POINT_ICONS = {
+  story_core: '<svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M8 1.5l1.8 4.2L14 6l-3.2 3 .8 4.5L8 11.5 4.4 13.5l.8-4.5L2 6l4.2-.3L8 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+  world_setting: '<svg viewBox="0 0 16 16" fill="none" width="14" height="14"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.3"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  character_setting: '<svg viewBox="0 0 16 16" fill="none" width="14" height="14"><circle cx="8" cy="5.5" r="2.8" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 14c.5-3 2.8-4.5 5.5-4.5s5 1.5 5.5 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  outline_reverse: '<svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M3 8a5 5 0 109-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12 2v3.5h-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  outline: '<svg viewBox="0 0 16 16" fill="none" width="14" height="14"><rect x="2" y="2.5" width="12" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 6h6M5 8.5h6M5 11h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+}
+const POINT_ORDER = ['story_core', 'world_setting', 'character_setting', 'outline_reverse', 'outline']
+
+function renderSkeletonPanel(s) {
+  if (!s.skeleton) return ''
+  const points = s.skeleton.points || {}
+  const summary = points._summary || {}
+  const pct = summary.percentage || 0
+  const ready = summary.is_skeleton_ready
+
+  const pointList = POINT_ORDER.map(pt => {
+    const info = points[pt]
+    const status = info?.status || 'missing'
+    const label = info?.label || pt
+    const icon = POINT_ICONS[pt] || ''
+    const dotContent = status === 'done' ? '<svg viewBox="0 0 12 12" fill="none" width="8" height="8"><path d="M2.5 6l2.5 2.5L9.5 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' : status === 'partial' ? '' : ''
+    const isCurrent = pt === s.guideCurrentPoint && status !== 'done'
+    return html`
+      <div class="skeleton-point ${status} ${isCurrent ? 'current' : ''}" data-action="guide-point" data-point="${pt}">
+        <span class="skeleton-point-icon">${icon}</span>
+        <span class="skeleton-point-label">${esc(label)}</span>
+        <span class="skeleton-point-dot">${dotContent}</span>
+      </div>`
+  }).join('')
+
+  return html`
+    <div class="skeleton-panel">
+      <div class="skeleton-header">
+        <span class="skeleton-header-title">骨架</span>
+        <span class="skeleton-status-badge ${ready ? 'ready' : 'progress'}">${ready ? 'READY' : pct + '%'}</span>
+      </div>
+      <div class="skeleton-progress-track">
+        <div class="skeleton-progress-fill" style="width:${pct}%"></div>
+      </div>
+      <div class="skeleton-point-list">${pointList}</div>
+      ${!ready ? html`
+        <button class="skeleton-cta" data-action="start-guide" data-point="${esc(s.guideCurrentPoint || 'story_core')}">
+          继续完善
+          <svg viewBox="0 0 16 16" fill="none" width="12" height="12"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>` : ''}
+    </div>`
+}
+
+function renderGuideModal(s) {
+  if (!s.isGuiding) return ''
+  const pointLabel = TYPE_LABELS[s.guideCurrentPoint] || s.guideCurrentPoint
+  return html`
+    <div class="modal-overlay">
+      <div class="guide-modal-inner">
+        <div class="guide-modal-header">
+          <span class="guide-modal-title">
+            <span class="guide-modal-title-dot"></span>
+            ${esc(pointLabel)}
+          </span>
+          <button class="btn btn-sm" data-action="close-guide">
+            <svg viewBox="0 0 16 16" fill="none" width="12" height="12"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div id="guide-msgs" class="guide-modal-body">
+          ${s.guideMessages.map(m => html`
+            <div class="guide-msg ${m.role} ${m.content === '...' ? 'typing' : ''}">${esc(m.content)}</div>
+          `).join('')}
+        </div>
+        <div class="guide-modal-footer">
+          <textarea id="guide-input" class="guide-input" placeholder="输入你的想法..." rows="1"></textarea>
+          <button class="btn btn-send" data-action="send-guide">
+            <svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>`
+}
+
 let _prevFullKey = ''
 let _prevMsgKey = ''
 let _streamingStarted = false
 let _autoScroll = false
 let _savedScrollRatio = 1
+let _streamRAF = null
 
 function _scrollToBottom() {
   const msgsEl = document.getElementById('chat-messages')
@@ -319,6 +389,28 @@ function _restoreScrollRatio() {
   const msgsEl = document.getElementById('chat-messages')
   if (msgsEl && msgsEl.scrollHeight > 0) {
     msgsEl.scrollTop = _savedScrollRatio * msgsEl.scrollHeight
+  }
+}
+
+function _updateStreamingContent() {
+  _streamRAF = null
+  const s = getState()
+  if (!s.isStreaming) return
+  const contentEl = document.querySelector('#streaming-msg .msg-content')
+  if (contentEl) {
+    contentEl.innerHTML = formatMd(s.streamingContent) + '<span class="streaming-cursor"></span>'
+    if (_autoScroll) {
+      const msgsEl = document.getElementById('chat-messages')
+      if (msgsEl) {
+        const nearBottom = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80
+        if (nearBottom) msgsEl.scrollTop = msgsEl.scrollHeight
+      }
+    }
+  } else {
+    const msgsEl = document.getElementById('chat-messages')
+    if (msgsEl) {
+      msgsEl.innerHTML = renderMessages(s)
+    }
   }
 }
 
@@ -348,20 +440,16 @@ function smartRender() {
       }
       return
     }
-    const contentEl = document.querySelector('#streaming-msg .msg-content')
-    if (contentEl) {
-      contentEl.innerHTML = formatMd(s.streamingContent) + '<span class="streaming-cursor"></span>'
-      if (_autoScroll) {
-        const msgsEl = document.getElementById('chat-messages')
-        if (msgsEl) {
-          const nearBottom = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80
-          if (nearBottom) msgsEl.scrollTop = msgsEl.scrollHeight
-        }
-      }
+    if (!_streamRAF) {
+      _streamRAF = requestAnimationFrame(_updateStreamingContent)
     }
     return
   }
 
+  if (_streamRAF) {
+    cancelAnimationFrame(_streamRAF)
+    _streamRAF = null
+  }
   if (_streamingStarted) {
     _streamingStarted = false
     _prevFullKey = ''
@@ -389,6 +477,8 @@ function smartRender() {
 }
 
 subscribe(() => smartRender())
+
+onError(msg => showToast(msg, 'error'))
 
 function closeModal() {
   const root = document.getElementById('modal-root')
@@ -477,7 +567,7 @@ window._submitSummarizeSave = async () => {
 
     const existing = s.workspaceItems.find(w => w.item_type === item_type)
     if (existing) {
-      const merged = (existing.content || '').rstrip ? (existing.content || '').replace(/\s+$/, '') : (existing.content || '').trimEnd()
+      const merged = (existing.content || '').trimEnd()
       const updatedContent = merged + '\n\n' + newSection
       await updateWorkspaceItem(existing.id, { content: updatedContent })
       showToast('已补充到「' + (existing.title || existing.item_type) + '」', 'success')
@@ -959,6 +1049,33 @@ document.addEventListener('click', async e => {
     case 'go-home':
       navigateTo('projects', {})
       break
+    case 'guide-point': {
+      const point = btn.dataset.point
+      await startGuide(s.currentProjectId, point)
+      render()
+      break
+    }
+    case 'start-guide': {
+      const point = btn.dataset.point || s.guideCurrentPoint || 'story_core'
+      await startGuide(s.currentProjectId, point)
+      render()
+      break
+    }
+    case 'close-guide':
+      closeGuide()
+      render()
+      break
+    case 'send-guide': {
+      const input = document.getElementById('guide-input')
+      if (input && input.value.trim()) {
+        const reply = input.value.trim()
+        await sendGuideReply(s.currentProjectId, reply)
+        render()
+        const msgsEl = document.getElementById('guide-msgs')
+        if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight
+      }
+      break
+    }
     case 'edit-project-name':
       showEditProjectName(s.currentProjectId)
       break
@@ -1251,6 +1368,12 @@ document.addEventListener('click', async e => {
 })
 
 document.addEventListener('keydown', e => {
+  const guideInput = document.getElementById('guide-input')
+  if (guideInput && e.key === 'Enter' && !e.shiftKey && document.activeElement === guideInput) {
+    e.preventDefault()
+    document.querySelector('[data-action="send-guide"]')?.click()
+    return
+  }
   const input = document.getElementById('chat-input')
   if (!input) return
   if (e.key === 'Enter' && !e.shiftKey && document.activeElement === input) {
@@ -1260,7 +1383,7 @@ document.addEventListener('keydown', e => {
 })
 
 document.addEventListener('input', e => {
-  if (e.target.id === 'chat-input') {
+  if (e.target.id === 'chat-input' || e.target.id === 'guide-input') {
     e.target.style.height = 'auto'
     e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
   }
@@ -1359,10 +1482,11 @@ function formatContent(text) {
   return esc(text).replace(/\n/g, '<br>')
 }
 
-let _mdCache = {}
+const _mdCache = new Map()
+const _MD_CACHE_MAX = 100
 function formatMd(text) {
   if (!text) return ''
-  if (_mdCache[text]) return _mdCache[text]
+  if (_mdCache.has(text)) return _mdCache.get(text)
   let html = esc(text)
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>')
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>')
@@ -1371,11 +1495,17 @@ function formatMd(text) {
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
   html = html.replace(/`(.+?)`/g, '<code>$1</code>')
   html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-  html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
   html = html.replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>')
+  html = html.replace(/((?:<li>.*<\/li>(\n|<br>)*)+)/g, '<ul>$1</ul>')
   html = html.replace(/\n\n/g, '<br><br>')
   html = html.replace(/\n/g, '<br>')
-  if (text.length < 5000) _mdCache[text] = html
+  if (text.length < 5000) {
+    if (_mdCache.size >= _MD_CACHE_MAX) {
+      const firstKey = _mdCache.keys().next().value
+      _mdCache.delete(firstKey)
+    }
+    _mdCache.set(text, html)
+  }
   return html
 }
 

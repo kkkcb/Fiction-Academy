@@ -1,65 +1,116 @@
-from contextlib import asynccontextmanager
+import os
 import logging
-from pathlib import Path
+from logging.handlers import RotatingFileHandler
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.database import close_db, get_db
+from backend.config import CORS_ORIGINS, STATIC_DIR
+from backend.database import get_db, close_db
 
-from backend.api.projects import router as projects_router
-from backend.api.chat import router as chat_router
-from backend.api.workspace import router as workspace_router
-from backend.api.chronicle import router as chronicle_router
-from backend.api.assistants import router as assistants_router
 
-STATIC_DIR = Path(__file__).parent.parent / "frontend"
-LOG_DIR = Path(__file__).parent.parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+def _setup_logging():
+    log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+    os.makedirs(log_dir, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_DIR / "app.log", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, "app.log"),
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.INFO)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.INFO)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await get_db()
-    yield
-    await close_db()
+    _setup_logging()
+    logger = logging.getLogger(__name__)
+    logger.info("Fiction Academy starting up...")
 
-app = FastAPI(title="Fiction Academy", version="0.2.0", lifespan=lifespan)
+    db = await get_db()
+    logger.info("Database initialized: %s", db)
+
+    from backend.api.assistants import ensure_builtins
+    await ensure_builtins()
+    logger.info("Built-in assistants ensured")
+
+    yield
+
+    logger.info("Shutting down...")
+    await close_db()
+    logger.info("Database closed")
+
+
+app = FastAPI(title="Fiction Academy", version="1.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def no_cache_static_files(request: Request, call_next):
-    response = await call_next(request)
-    path = request.url.path
-    if path.startswith("/js/") or path.startswith("/css/") or path == "/style.css" or path.endswith(".html"):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
 
-app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
-app.include_router(chat_router, prefix="/api", tags=["chat"])
-app.include_router(workspace_router, prefix="/api", tags=["workspace"])
-app.include_router(chronicle_router, prefix="/api/projects", tags=["chronicle"])
-app.include_router(assistants_router, prefix="/api", tags=["assistants"])
+class NoCacheStaticFilesMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.endswith(".html") or path == "/" or path.endswith(".js") or path.endswith(".css"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
+app.add_middleware(NoCacheStaticFilesMiddleware)
+
+from backend.api import projects, chat, workspace, chronicle, assistants, skeleton, chapter_writing
+
+app.include_router(projects.router, prefix="/api/projects")
+app.include_router(chat.router)
+app.include_router(workspace.router)
+app.include_router(chronicle.router)
+app.include_router(assistants.router)
+app.include_router(skeleton.router)
+app.include_router(chapter_writing.router)
+
 
 @app.get("/api/health")
-async def health():
-    return {"status": "ok"}
+async def health_check():
+    try:
+        db = await get_db()
+        from backend.database import fetch_one
+        row = await fetch_one(db, "SELECT 1 as ok")
+        db_ok = row is not None
+    except Exception:
+        db_ok = False
 
-app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    from backend.config import XIAOMI_API_KEY
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "database": db_ok,
+        "llm_configured": bool(XIAOMI_API_KEY),
+    }
+
+
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

@@ -35,9 +35,9 @@ pip install -r backend/requirements.txt
 在项目根目录创建 `.env.local`：
 
 ```env
-XIAOMI_API_KEY=your_api_key_here
-XIAOMI_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1
-DEFAULT_MODEL=mimo-v2.5-pro
+LLM_API_KEY=your_api_key_here
+LLM_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
+FA_DEFAULT_MODEL=glm-5.2
 ```
 
 ### 3. 启动

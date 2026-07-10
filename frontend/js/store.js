@@ -22,16 +22,31 @@ const state = {
 
   chronicle: null,
 
+  skeleton: null,
+  guideConversationId: null,
+  guideMessages: [],
+  guideCurrentPoint: null,
+  isGuiding: false,
+
   error: null,
 
   _mobileTab: null,
+  _currentAbort: null,
 }
 
 const listeners = new Set()
+const errorListeners = new Set()
+let _navToken = 0
+let _convToken = 0
 
 export function subscribe(fn) {
   listeners.add(fn)
   return () => listeners.delete(fn)
+}
+
+export function onError(fn) {
+  errorListeners.add(fn)
+  return () => errorListeners.delete(fn)
 }
 
 export function getState() {
@@ -39,9 +54,30 @@ export function getState() {
 }
 
 export function setState(partial) {
+  const prevError = state.error
   Object.assign(state, partial)
-  for (const fn of listeners) {
-    fn(state)
+  for (const fn of [...listeners]) {
+    try {
+      fn(state)
+    } catch (e) {
+      console.error('[store] listener error:', e)
+    }
+  }
+  if (partial.error && partial.error !== prevError) {
+    for (const fn of [...errorListeners]) {
+      try {
+        fn(partial.error)
+      } catch (e) {
+        console.error('[store] error listener error:', e)
+      }
+    }
+  }
+}
+
+function _abortCurrentStream() {
+  if (state._currentAbort) {
+    state._currentAbort()
+    state._currentAbort = null
   }
 }
 
@@ -97,8 +133,17 @@ export async function createConversation(projectId, title) {
 }
 
 export async function selectConversation(conversationId) {
+  _abortCurrentStream()
+  const token = ++_convToken
   setState({ currentConversationId: conversationId })
-  await fetchMessages(conversationId)
+  try {
+    const messages = await api.getMessages(conversationId)
+    if (token !== _convToken) return
+    setState({ messages, error: null })
+  } catch (e) {
+    if (token !== _convToken) return
+    setState({ error: e.message })
+  }
 }
 
 export async function deleteConversation(conversationId) {
@@ -131,28 +176,47 @@ export async function fetchMessages(conversationId) {
 }
 
 function _requestReply(conversationId, content, baseMessages, regenerate = false) {
+  _abortCurrentStream()
+
   let fullContent = ''
   const assistantId = state.currentAssistantId
+  const targetConvId = conversationId
 
   setState({ isStreaming: true, streamingContent: '' })
 
-  api.streamChat(
+  const abort = api.streamChat(
     conversationId,
     content,
     (chunk) => {
+      if (state.currentConversationId !== targetConvId) return
       fullContent += chunk
       setState({ streamingContent: fullContent })
     },
     () => {
+      state._currentAbort = null
+      if (state.currentConversationId !== targetConvId) {
+        setState({ isStreaming: false, streamingContent: '' })
+        return
+      }
       setState({
         messages: [...baseMessages, { role: 'assistant', content: fullContent }],
         streamingContent: '',
         isStreaming: false,
       })
     },
-    (err) => {
+    (err, partialContent) => {
+      state._currentAbort = null
       console.error('[sendMessage] stream error:', err)
+      const finalContent = partialContent || fullContent
+      const newMessages = finalContent
+        ? [...baseMessages, { role: 'assistant', content: finalContent + '\n\n[生成中断]' }]
+        : baseMessages
+      if (state.currentConversationId !== targetConvId) {
+        setState({ isStreaming: false, streamingContent: '' })
+        return
+      }
       setState({
+        messages: newMessages,
         isStreaming: false,
         streamingContent: '',
         error: err.message,
@@ -161,6 +225,8 @@ function _requestReply(conversationId, content, baseMessages, regenerate = false
     assistantId,
     regenerate,
   )
+
+  state._currentAbort = abort
 }
 
 export function sendMessage(conversationId, content) {
@@ -231,6 +297,9 @@ export async function fetchChronicle(projectId) {
 }
 
 export async function navigateTo(route, params = {}) {
+  _abortCurrentStream()
+  const token = ++_navToken
+
   const update = {
     route,
     currentConversationId: null,
@@ -245,18 +314,23 @@ export async function navigateTo(route, params = {}) {
 
   if (route === 'workspace' && params.currentProjectId) {
     const pid = params.currentProjectId
-    await Promise.all([
+    const results = await Promise.allSettled([
       fetchConversations(pid),
       fetchWorkspaceItems(pid),
       fetchChronicle(pid),
       fetchAssistants(),
+      fetchSkeleton(pid),
     ])
+    if (token !== _navToken) return
+
     const s = getState()
     if (s.conversations.length > 0) {
       setState({ currentConversationId: s.conversations[0].id })
       await fetchMessages(s.conversations[0].id)
+      if (token !== _navToken) return
     } else {
       const conv = await createConversation(pid, '对话 1')
+      if (token !== _navToken) return
       if (conv) setState({ currentConversationId: conv.id })
     }
   }
@@ -308,5 +382,74 @@ export async function deleteAssistant(id) {
     setState({ assistants, currentAssistantId, error: null })
   } catch (e) {
     setState({ error: e.message })
+  }
+}
+
+export async function fetchSkeleton(projectId) {
+  try {
+    const skeleton = await api.getSkeleton(projectId)
+    setState({ skeleton, guideCurrentPoint: skeleton.current_point, error: null })
+  } catch (e) {
+    setState({ error: e.message })
+  }
+}
+
+export async function startGuide(projectId, point) {
+  setState({ isGuiding: true, guideMessages: [], guideCurrentPoint: point || state.guideCurrentPoint })
+  try {
+    const r = await api.skeletonGuide(projectId, { step: 'intro', point: point || undefined })
+    setState({
+      guideConversationId: r.conversation_id,
+      guideMessages: [{ role: 'assistant', content: r.reply }],
+      guideCurrentPoint: r.current_point,
+      skeleton: { ...state.skeleton, points: r.completeness ? { ...state.skeleton?.points, _summary: r.completeness } : state.skeleton?.points },
+      error: null,
+    })
+  } catch (e) {
+    setState({ isGuiding: false, error: e.message })
+  }
+}
+
+export async function sendGuideReply(projectId, reply) {
+  if (!state.guideConversationId || !state.guideCurrentPoint) return
+  const point = state.guideCurrentPoint
+  const newMsgs = [...state.guideMessages, { role: 'user', content: reply }]
+  setState({ guideMessages: [...newMsgs, { role: 'assistant', content: '...' }] })
+  try {
+    const r = await api.skeletonGuide(projectId, {
+      step: 'extract',
+      user_reply: reply,
+      conversation_id: state.guideConversationId,
+      point,
+    })
+    const updatedMsgs = [...newMsgs, { role: 'assistant', content: r.reply }]
+    setState({
+      guideMessages: updatedMsgs,
+      guideCurrentPoint: r.next_point || point,
+      skeleton: { ...state.skeleton, points: { ...state.skeleton?.points, _summary: r.completeness } },
+      isGuiding: !r.is_point_complete,
+      error: null,
+    })
+    if (r.is_point_complete) {
+      await fetchSkeleton(projectId)
+    }
+  } catch (e) {
+    setState({
+      guideMessages: [...newMsgs, { role: 'assistant', content: `[出错] ${e.message}` }],
+      error: e.message,
+    })
+  }
+}
+
+export function closeGuide() {
+  setState({ isGuiding: false, guideMessages: [], guideConversationId: null })
+}
+
+export async function checkWriteReadiness(projectId) {
+  try {
+    return await api.checkWriteReadiness(projectId)
+  } catch (e) {
+    setState({ error: e.message })
+    return null
   }
 }

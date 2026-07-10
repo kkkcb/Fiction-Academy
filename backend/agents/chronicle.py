@@ -30,7 +30,8 @@ CHRONICLE_PROMPT = """你是一位编年史记录员。你的职责是根据新�
     }
   ],
   "key_events": ["事件1", "事件2", ...],
-  "unresolved_threads": ["伏笔1", "伏笔2", ...]
+  "unresolved_threads": ["伏笔1", "伏笔2", ...],
+  "raw_text": "用自然语言编写的编年史摘要（200字以内）"
 }
 
 注意：

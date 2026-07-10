@@ -11,13 +11,15 @@ async function request(method, url, body) {
   }
   const res = await fetch(BASE + url, options)
   if (!res.ok) {
-    const error = new Error(`HTTP ${res.status}`)
-    error.status = res.status
+    let detail = ''
     try {
-      error.body = await res.json()
+      const body = await res.json()
+      detail = body?.detail || body?.message || ''
     } catch {
-      error.body = null
+      try { detail = await res.text() } catch {}
     }
+    const error = new Error(detail ? `${detail}` : `HTTP ${res.status}`)
+    error.status = res.status
     throw error
   }
   return res.json()
@@ -68,7 +70,9 @@ export function streamChat(conversationId, content, onChunk, onDone, onError, as
   xhr.open('POST', `${BASE}/conversations/${conversationId}/chat/stream`)
   xhr.setRequestHeader('Content-Type', 'application/json')
 
-  let buffer = ''
+  let processed = 0
+  let pending = ''
+  let fullContent = ''
   let finished = false
 
   const finish = () => {
@@ -77,29 +81,65 @@ export function streamChat(conversationId, content, onChunk, onDone, onError, as
     onDone()
   }
 
-  xhr.onprogress = function () {
-    if (finished) return
-    const newData = xhr.responseText.substring(buffer.length)
-    buffer = xhr.responseText
-    const lines = newData.split('\n')
+  const processLines = () => {
+    const newData = xhr.responseText.substring(processed)
+    processed = xhr.responseText.length
+    pending += newData
+    const lines = pending.split('\n')
+    pending = lines.pop()
     for (const line of lines) {
       if (!line.trim()) continue
       try {
         const obj = JSON.parse(line)
         if (obj.done) { finish(); return }
-        if (obj.error) { onError(new Error(obj.error)); finished = true; return }
-        if (obj.content) onChunk(obj.content)
-      } catch {}
+        if (obj.error) { onError(new Error(obj.error), fullContent); finished = true; return }
+        if (obj.content) {
+          fullContent += obj.content
+          onChunk(obj.content)
+        }
+      } catch (e) {
+        // partial JSON, will be retried on next chunk
+      }
     }
   }
 
-  xhr.onload = function () {
-    if (xhr.status >= 200 && xhr.status < 300) finish()
-    else { finished = true; onError(new Error(`HTTP ${xhr.status}`)) }
+  xhr.onprogress = function () {
+    if (finished) return
+    processLines()
   }
 
-  xhr.onerror = function () { finished = true; onError(new Error('Network error')) }
-  xhr.onabort = function () { finished = true; onError(new Error('Request aborted')) }
+  xhr.onload = function () {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      if (pending.trim()) {
+        try {
+          const obj = JSON.parse(pending.trim())
+          if (obj.done) { finish(); return }
+          if (obj.error) { onError(new Error(obj.error), fullContent); finished = true; return }
+          if (obj.content) {
+            fullContent += obj.content
+            onChunk(obj.content)
+          }
+        } catch (e) {
+          // ignore residual parse error
+        }
+      }
+      finish()
+    } else {
+      finished = true
+      onError(new Error(`HTTP ${xhr.status}`), fullContent)
+    }
+  }
+
+  xhr.onerror = function () {
+    if (finished) return
+    finished = true
+    onError(new Error('Network error'), fullContent)
+  }
+  xhr.onabort = function () {
+    if (finished) return
+    finished = true
+    onError(new Error('Request aborted'), fullContent)
+  }
 
   xhr.send(JSON.stringify({ content, assistant_id: assistantId || '', regenerate }))
 
@@ -172,4 +212,32 @@ export async function updateChronicle(projectId, data) {
 
 export async function refreshChronicle(projectId) {
   return request('POST', `/projects/${projectId}/chronicle/refresh`)
+}
+
+export async function getSkeleton(projectId) {
+  return request('GET', `/projects/${projectId}/skeleton`)
+}
+
+export async function skeletonGuide(projectId, data) {
+  return request('POST', `/projects/${projectId}/skeleton/guide`, data)
+}
+
+export async function checkWriteReadiness(projectId) {
+  return request('GET', `/projects/${projectId}/skeleton/check-write`)
+}
+
+export async function generateChapterPlan(projectId, data) {
+  return request('POST', `/projects/${projectId}/chapter-plan/generate`, data)
+}
+
+export async function getChapterPlan(projectId, chapterNumber) {
+  return request('GET', `/projects/${projectId}/chapter-plan/${chapterNumber}`)
+}
+
+export async function confirmChapterPlan(projectId, chapterNumber) {
+  return request('PUT', `/projects/${projectId}/chapter-plan/${chapterNumber}/confirm`)
+}
+
+export async function reviewChapter(projectId, chapterNumber, content) {
+  return request('POST', `/projects/${projectId}/chapters/${chapterNumber}/review`, { chapter_content: content })
 }
