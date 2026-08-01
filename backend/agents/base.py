@@ -31,6 +31,11 @@ def _get_client() -> AsyncOpenAI:
 
 
 async def chat_stream(messages: list[dict], system_prompt: str | None = None, model: str = "", temperature: float = 0.8):
+    """流式生成。yield (kind, text) 元组，kind ∈ {'reasoning', 'content'}。
+
+    reasoning 为模型的思考链（DeepSeek-R1 / GLM 推理模型的 reasoning_content 字段），
+    content 为最终回复正文。无推理能力的模型只产出 content。
+    """
     client = _get_client()
     sys = system_prompt if system_prompt is not None else SYSTEM_PROMPT
     full_messages = [{"role": "system", "content": sys}] + messages
@@ -42,8 +47,14 @@ async def chat_stream(messages: list[dict], system_prompt: str | None = None, mo
         max_tokens=LLM_MAX_TOKENS,
     )
     async for chunk in stream:
-        if chunk.choices and chunk.choices[0].delta.content:
-            yield chunk.choices[0].delta.content
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+        if reasoning:
+            yield ("reasoning", reasoning)
+        if delta.content:
+            yield ("content", delta.content)
 
 
 async def chat_text(messages: list[dict], system_prompt: str | None = None, model: str = "", temperature: float = 0.8) -> str:

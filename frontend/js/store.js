@@ -10,10 +10,16 @@ const state = {
   currentConversationId: null,
   messages: [],
   streamingContent: '',
+  streamingThinking: '',
   isStreaming: false,
+  consultFlow: null,
+
+  points: [],
+  currentPoint: null,
+  activeMode: 'point',
+
   isSummarizing: false,
-  pendingQuestions: [],
-  questionAnswers: {},
+  isArchiving: false,
 
   assistants: [],
   currentAssistantId: '',
@@ -21,12 +27,6 @@ const state = {
   workspaceItems: [],
 
   chronicle: null,
-
-  skeleton: null,
-  guideConversationId: null,
-  guideMessages: [],
-  guideCurrentPoint: null,
-  isGuiding: false,
 
   error: null,
 
@@ -74,6 +74,10 @@ export function setState(partial) {
   }
 }
 
+export function setStateSilent(partial) {
+  Object.assign(state, partial)
+}
+
 function _abortCurrentStream() {
   if (state._currentAbort) {
     state._currentAbort()
@@ -85,7 +89,19 @@ export async function deleteProject(projectId) {
   try {
     await api.deleteProject(projectId)
     const updated = state.projects.filter(p => p.id !== projectId)
-    setState({ projects: updated, error: null })
+    const patch = { projects: updated, error: null }
+    if (state.currentProjectId === projectId) {
+      _abortCurrentStream()
+      patch.route = 'projects'
+      patch.currentProjectId = null
+      patch.conversations = []
+      patch.currentConversationId = null
+      patch.messages = []
+      patch.points = []
+      patch.workspaceItems = []
+      patch.currentPoint = null
+    }
+    setState(patch)
   } catch (e) {
     setState({ error: e.message })
   }
@@ -106,8 +122,10 @@ export async function createProject(name, genre) {
     if (genre) data.genre = genre
     const project = await api.createProject(data)
     setState({ projects: [project, ...state.projects], error: null })
+    return project
   } catch (e) {
     setState({ error: e.message })
+    return null
   }
 }
 
@@ -124,7 +142,7 @@ export async function createConversation(projectId, title) {
   try {
     const conversation = await api.createConversation(projectId, title)
     const updated = [conversation, ...state.conversations]
-    setState({ conversations: updated, currentConversationId: conversation.id, messages: [], error: null })
+    setState({ conversations: updated, currentConversationId: conversation.id, messages: [], activeMode: 'free', currentPoint: null, error: null })
     return conversation
   } catch (e) {
     setState({ error: e.message })
@@ -135,7 +153,7 @@ export async function createConversation(projectId, title) {
 export async function selectConversation(conversationId) {
   _abortCurrentStream()
   const token = ++_convToken
-  setState({ currentConversationId: conversationId })
+  setState({ currentConversationId: conversationId, activeMode: 'free', currentPoint: null, consultFlow: null, streamingContent: '', streamingThinking: '' })
   try {
     const messages = await api.getMessages(conversationId)
     if (token !== _convToken) return
@@ -150,7 +168,14 @@ export async function deleteConversation(conversationId) {
   try {
     await api.deleteConversation(conversationId)
     const updated = state.conversations.filter(c => c.id !== conversationId)
-    setState({ conversations: updated, error: null })
+    const patch = { conversations: updated, error: null }
+    if (state.currentConversationId === conversationId) {
+      patch.currentConversationId = null
+      patch.messages = []
+      patch.streamingContent = ''
+      patch.isStreaming = false
+    }
+    setState(patch)
   } catch (e) {
     setState({ error: e.message })
   }
@@ -179,46 +204,60 @@ function _requestReply(conversationId, content, baseMessages, regenerate = false
   _abortCurrentStream()
 
   let fullContent = ''
+  let thinkingContent = ''
   const assistantId = state.currentAssistantId
   const targetConvId = conversationId
 
-  setState({ isStreaming: true, streamingContent: '' })
+  setState({ isStreaming: true, streamingContent: '', streamingThinking: '' })
 
   const abort = api.streamChat(
     conversationId,
     content,
-    (chunk) => {
+    (chunk, type) => {
       if (state.currentConversationId !== targetConvId) return
-      fullContent += chunk
-      setState({ streamingContent: fullContent })
+      if (type === 'thinking') {
+        thinkingContent += chunk
+        setState({ streamingThinking: thinkingContent })
+      } else {
+        fullContent += chunk
+        setState({ streamingContent: fullContent, streamingThinking: thinkingContent })
+      }
     },
     () => {
       state._currentAbort = null
       if (state.currentConversationId !== targetConvId) {
-        setState({ isStreaming: false, streamingContent: '' })
+        setState({ isStreaming: false, streamingContent: '', streamingThinking: '' })
         return
       }
       setState({
-        messages: [...baseMessages, { role: 'assistant', content: fullContent }],
+        messages: [...baseMessages, { role: 'assistant', content: fullContent, thinking: thinkingContent || undefined }],
         streamingContent: '',
+        streamingThinking: '',
         isStreaming: false,
       })
     },
     (err, partialContent) => {
       state._currentAbort = null
+      if (err.isAbort) {
+        if (state.currentConversationId !== targetConvId) {
+          setState({ isStreaming: false, streamingContent: '', streamingThinking: '' })
+        }
+        return
+      }
       console.error('[sendMessage] stream error:', err)
       const finalContent = partialContent || fullContent
       const newMessages = finalContent
-        ? [...baseMessages, { role: 'assistant', content: finalContent + '\n\n[生成中断]' }]
+        ? [...baseMessages, { role: 'assistant', content: finalContent + '\n\n[生成中断]', thinking: thinkingContent || undefined }]
         : baseMessages
       if (state.currentConversationId !== targetConvId) {
-        setState({ isStreaming: false, streamingContent: '' })
+        setState({ isStreaming: false, streamingContent: '', streamingThinking: '' })
         return
       }
       setState({
         messages: newMessages,
         isStreaming: false,
         streamingContent: '',
+        streamingThinking: '',
         error: err.message,
       })
     },
@@ -296,6 +335,241 @@ export async function fetchChronicle(projectId) {
   }
 }
 
+export async function fetchPoints(projectId) {
+  try {
+    const data = await api.getPoints(projectId)
+    setState({ points: data.points || [], error: null })
+    return data
+  } catch (e) {
+    setState({ error: e.message })
+    return null
+  }
+}
+
+let _loadingPoint = null
+export async function selectPoint(projectId, point) {
+  if (_loadingPoint === point && state.currentPoint === point) return
+  _loadingPoint = point
+  _abortCurrentStream()
+  const token = ++_convToken
+  setState({ currentPoint: point, activeMode: 'point', currentConversationId: null, messages: [], consultFlow: null, streamingContent: '', streamingThinking: '' })
+  try {
+    const r = await api.ensurePointConversation(projectId, point)
+    if (token !== _convToken) { _loadingPoint = null; return }
+    setState({
+      currentConversationId: r.conversation_id,
+      messages: r.messages || [],
+      error: null,
+    })
+  } catch (e) {
+    if (token !== _convToken) { _loadingPoint = null; return }
+    setState({ error: e.message })
+  } finally {
+    _loadingPoint = null
+  }
+}
+
+export async function summarizeAndArchive(projectId, point) {
+  if (!state.currentConversationId) return null
+  setState({ isArchiving: true })
+  try {
+    const r = await api.summarizePoint(projectId, point, state.currentConversationId)
+    await fetchPoints(projectId)
+    await fetchWorkspaceItems(projectId)
+    setState({ isArchiving: false, error: null })
+    return r
+  } catch (e) {
+    setState({ isArchiving: false, error: e.message })
+    return null
+  }
+}
+
+export async function goalGenerate(projectId, point, idea) {
+  const targetConvId = state.currentConversationId
+  const baseMessages = state.messages
+  const userMsg = { role: 'user', content: `/goal ${idea}` }
+  setState({
+    messages: [...baseMessages, userMsg],
+    isStreaming: true,
+    streamingContent: '',
+    error: null,
+  })
+  try {
+    const r = await api.autoGeneratePoint(projectId, point, targetConvId, idea)
+    if (state.currentConversationId !== targetConvId) {
+      setState({ isStreaming: false, streamingContent: '' })
+      return r
+    }
+    const fieldsText = r.metadata && Object.keys(r.metadata).length > 0
+      ? '\n\n**结构化字段：**\n' + Object.entries(r.metadata).map(([k, v]) => `- **${k}**: ${v}`).join('\n')
+      : ''
+    setState({
+      messages: [...baseMessages, userMsg, { role: 'assistant', content: r.content + fieldsText }],
+      streamingContent: '',
+      isStreaming: false,
+    })
+    await fetchPoints(projectId)
+    await fetchWorkspaceItems(projectId)
+    if (state.currentConversationId === targetConvId) {
+      await fetchMessages(targetConvId)
+    }
+    return r
+  } catch (e) {
+    if (state.currentConversationId !== targetConvId) {
+      setState({ isStreaming: false, streamingContent: '' })
+      return null
+    }
+    setState({
+      messages: [...baseMessages, userMsg, { role: 'assistant', content: `[生成失败] ${e.message}` }],
+      isStreaming: false,
+      streamingContent: '',
+      error: e.message,
+    })
+    return null
+  }
+}
+
+export function expertConsult(projectId, point, idea) {
+  const targetConvId = state.currentConversationId
+  const baseMessages = state.messages
+  const userMsg = { role: 'user', content: `/consult ${idea}` }
+
+  const flow = { leader: null, rounds: [], summary: '', summaryThinking: '', pending: '🎯 故事核专家（统率者）正在定调...' }
+  const entryMap = {}
+
+  const findEntry = (round, expert) => entryMap[`${round}-${expert}`]
+
+  const mkFlow = () => ({
+    kind: 'consult_record',
+    leader: flow.leader,
+    rounds: flow.rounds.map(r => ({ ...r, entries: r.entries.map(e => ({ ...e })) })),
+    summary: flow.summary,
+    summaryThinking: flow.summaryThinking,
+    pending: flow.pending,
+  })
+
+  setState({
+    messages: [...baseMessages, userMsg],
+    isStreaming: true,
+    consultFlow: mkFlow(),
+    streamingContent: '',
+    error: null,
+  })
+
+  const abort = api.streamExpertConsult(
+    projectId,
+    point,
+    targetConvId,
+    idea,
+    (event) => {
+      if (state.currentConversationId !== targetConvId) return
+      const ph = event.phase
+      if (ph === 'leader_start') {
+        flow.leader = { name: event.name, perspective: event.perspective, content: '', thinking: '' }
+        flow.pending = '🎯 统率者正在定调...'
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'leader_thinking_chunk') {
+        if (flow.leader) flow.leader.thinking = (flow.leader.thinking || '') + event.chunk
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'leader_chunk') {
+        if (flow.leader) flow.leader.content += event.chunk
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'leader_done') {
+        if (flow.leader) { flow.leader.content = event.content }
+        else { flow.leader = { name: event.name, perspective: event.perspective, content: event.content, thinking: '' } }
+        flow.pending = '⏳ 各专家正在响应统率者定调...'
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'round_start') {
+        flow.rounds.push({ round: event.round, label: event.round === 1 ? '响应定调' : '交锋', entries: [] })
+        flow.pending = `⏳ 第${event.round}轮讨论进行中...`
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'expert_start') {
+        const r = flow.rounds.find(x => x.round === event.round)
+        if (r) {
+          const entry = { name: event.name, perspective: event.perspective, content: '', thinking: '', is_leader: !!event.is_leader }
+          r.entries.push(entry)
+          entryMap[`${event.round}-${event.expert}`] = entry
+        }
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'expert_thinking_chunk') {
+        const entry = findEntry(event.round, event.expert)
+        if (entry) entry.thinking = (entry.thinking || '') + event.chunk
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'expert_chunk') {
+        const entry = findEntry(event.round, event.expert)
+        if (entry) entry.content += event.chunk
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'expert_done') {
+        const entry = findEntry(event.round, event.expert)
+        if (entry) entry.content = event.content
+        flow.pending = '⏳ 等待更多专家发言...'
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'summary_start') {
+        flow.pending = '⏳ 统率者（主线策划）正在做最终裁决...'
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'summary_thinking_chunk') {
+        flow.summaryThinking += event.chunk
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'summary_chunk') {
+        flow.summary += event.chunk
+        setState({ consultFlow: mkFlow() })
+      } else if (ph === 'summary') {
+        flow.summary = event.content
+        const finalFlow = mkFlow()
+        if (state.currentConversationId === targetConvId) {
+          setState({
+            messages: [...baseMessages, userMsg, { role: 'assistant', content: JSON.stringify(finalFlow), consult_kind: 'consult_record' }],
+            consultFlow: null,
+            streamingContent: '',
+            isStreaming: false,
+          })
+        }
+      } else if (ph === 'saved') {
+        fetchPoints(projectId)
+        fetchWorkspaceItems(projectId)
+        if (state.currentConversationId === targetConvId) {
+          fetchMessages(targetConvId)
+        }
+      }
+    },
+    () => {
+      if (state.currentConversationId !== targetConvId) {
+        setState({ isStreaming: false, consultFlow: null, streamingContent: '' })
+        return
+      }
+      if (!flow.summary) {
+        const partial = mkFlow()
+        setState({
+          messages: [...baseMessages, userMsg, { role: 'assistant', content: JSON.stringify({ ...partial, error: '会诊未产出完整结果' }) }],
+          consultFlow: null,
+          streamingContent: '',
+          isStreaming: false,
+        })
+      } else {
+        setState({ consultFlow: null, streamingContent: '', isStreaming: false })
+      }
+    },
+    (err) => {
+      if (err.isAbort) {
+        if (state.currentConversationId !== targetConvId) {
+          setState({ isStreaming: false, streamingContent: '' })
+        }
+        return
+      }
+      if (state.currentConversationId === targetConvId) {
+        setState({
+          messages: [...baseMessages, userMsg, { role: 'assistant', content: `[会诊失败] ${err.message}` }],
+          streamingContent: '',
+          isStreaming: false,
+          error: err.message,
+        })
+      }
+    },
+  )
+
+  state._currentAbort = abort
+}
+
 export async function navigateTo(route, params = {}) {
   _abortCurrentStream()
   const token = ++_navToken
@@ -303,54 +577,74 @@ export async function navigateTo(route, params = {}) {
   const update = {
     route,
     currentConversationId: null,
+    currentPoint: null,
     messages: [],
     streamingContent: '',
+    streamingThinking: '',
     isStreaming: false,
+    consultFlow: null,
     workspaceItems: [],
     chronicle: null,
+    points: [],
+    currentAssistantId: '',
     ...params,
   }
   setState(update)
 
   if (route === 'workspace' && params.currentProjectId) {
     const pid = params.currentProjectId
-    const results = await Promise.allSettled([
+    await Promise.allSettled([
       fetchConversations(pid),
       fetchWorkspaceItems(pid),
       fetchChronicle(pid),
       fetchAssistants(),
-      fetchSkeleton(pid),
     ])
     if (token !== _navToken) return
 
-    const s = getState()
-    if (s.conversations.length > 0) {
-      setState({ currentConversationId: s.conversations[0].id })
-      await fetchMessages(s.conversations[0].id)
-      if (token !== _navToken) return
-    } else {
-      const conv = await createConversation(pid, '对话 1')
-      if (token !== _navToken) return
-      if (conv) setState({ currentConversationId: conv.id })
-    }
+    const pointsData = await fetchPoints(pid)
+    if (token !== _navToken) return
+
+    const startPoint = pointsData?.current_point || 'story_core'
+    await selectPoint(pid, startPoint)
   }
 }
 
 export async function fetchAssistants() {
   try {
     const assistants = await api.listAssistants()
-    if (!state.currentAssistantId && assistants.length > 0) {
-      setState({ assistants, currentAssistantId: assistants[0].id })
-    } else {
-      setState({ assistants })
+    let chosenId = state.currentAssistantId
+    if (!chosenId && state.currentProjectId) {
+      chosenId = _getSavedAssistant(state.currentProjectId)
     }
+    if (!chosenId && assistants.length > 0) {
+      chosenId = assistants[0].id
+    }
+    const valid = chosenId && assistants.some(a => a.id === chosenId)
+    setState({ assistants, currentAssistantId: valid ? chosenId : (assistants[0]?.id || '') })
   } catch (e) {
     setState({ error: e.message })
   }
 }
 
+const ASSISTANT_KEY_PREFIX = 'fa_assistant_'
+
+function _getSavedAssistant(projectId) {
+  try { return localStorage.getItem(ASSISTANT_KEY_PREFIX + projectId) || '' } catch { return '' }
+}
+
+function _saveAssistant(projectId, assistantId) {
+  if (!projectId) return
+  try {
+    if (assistantId) localStorage.setItem(ASSISTANT_KEY_PREFIX + projectId, assistantId)
+    else localStorage.removeItem(ASSISTANT_KEY_PREFIX + projectId)
+  } catch {}
+}
+
 export function selectAssistant(assistantId) {
-  setState({ currentAssistantId: assistantId })
+  setStateSilent({ currentAssistantId: assistantId })
+  if (state.currentProjectId) {
+    _saveAssistant(state.currentProjectId, assistantId)
+  }
 }
 
 export async function createAssistant(data) {
@@ -382,74 +676,5 @@ export async function deleteAssistant(id) {
     setState({ assistants, currentAssistantId, error: null })
   } catch (e) {
     setState({ error: e.message })
-  }
-}
-
-export async function fetchSkeleton(projectId) {
-  try {
-    const skeleton = await api.getSkeleton(projectId)
-    setState({ skeleton, guideCurrentPoint: skeleton.current_point, error: null })
-  } catch (e) {
-    setState({ error: e.message })
-  }
-}
-
-export async function startGuide(projectId, point) {
-  setState({ isGuiding: true, guideMessages: [], guideCurrentPoint: point || state.guideCurrentPoint })
-  try {
-    const r = await api.skeletonGuide(projectId, { step: 'intro', point: point || undefined })
-    setState({
-      guideConversationId: r.conversation_id,
-      guideMessages: [{ role: 'assistant', content: r.reply }],
-      guideCurrentPoint: r.current_point,
-      skeleton: { ...state.skeleton, points: r.completeness ? { ...state.skeleton?.points, _summary: r.completeness } : state.skeleton?.points },
-      error: null,
-    })
-  } catch (e) {
-    setState({ isGuiding: false, error: e.message })
-  }
-}
-
-export async function sendGuideReply(projectId, reply) {
-  if (!state.guideConversationId || !state.guideCurrentPoint) return
-  const point = state.guideCurrentPoint
-  const newMsgs = [...state.guideMessages, { role: 'user', content: reply }]
-  setState({ guideMessages: [...newMsgs, { role: 'assistant', content: '...' }] })
-  try {
-    const r = await api.skeletonGuide(projectId, {
-      step: 'extract',
-      user_reply: reply,
-      conversation_id: state.guideConversationId,
-      point,
-    })
-    const updatedMsgs = [...newMsgs, { role: 'assistant', content: r.reply }]
-    setState({
-      guideMessages: updatedMsgs,
-      guideCurrentPoint: r.next_point || point,
-      skeleton: { ...state.skeleton, points: { ...state.skeleton?.points, _summary: r.completeness } },
-      isGuiding: !r.is_point_complete,
-      error: null,
-    })
-    if (r.is_point_complete) {
-      await fetchSkeleton(projectId)
-    }
-  } catch (e) {
-    setState({
-      guideMessages: [...newMsgs, { role: 'assistant', content: `[出错] ${e.message}` }],
-      error: e.message,
-    })
-  }
-}
-
-export function closeGuide() {
-  setState({ isGuiding: false, guideMessages: [], guideConversationId: null })
-}
-
-export async function checkWriteReadiness(projectId) {
-  try {
-    return await api.checkWriteReadiness(projectId)
-  } catch (e) {
-    setState({ error: e.message })
-    return null
   }
 }

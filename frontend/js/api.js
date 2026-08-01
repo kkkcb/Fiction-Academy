@@ -13,11 +13,15 @@ async function request(method, url, body) {
   if (!res.ok) {
     let detail = ''
     try {
-      const body = await res.json()
-      detail = body?.detail || body?.message || ''
+      const errBody = await res.json()
+      detail = errBody?.detail || errBody?.message || ''
     } catch {
       try { detail = await res.text() } catch {}
     }
+    if (res.status === 401) detail = detail || '未授权，请检查配置'
+    else if (res.status === 403) detail = detail || '无权限执行此操作'
+    else if (res.status === 404) detail = detail || '资源不存在'
+    else if (res.status >= 500) detail = detail || '服务器错误，请稍后重试'
     const error = new Error(detail ? `${detail}` : `HTTP ${res.status}`)
     error.status = res.status
     throw error
@@ -65,6 +69,80 @@ export async function getMessages(conversationId) {
   return request('GET', `/conversations/${conversationId}/messages`)
 }
 
+export function streamExpertConsult(projectId, point, conversationId, idea, onEvent, onDone, onError) {
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', `${BASE}/projects/${projectId}/points/${point}/expert-consult`)
+  xhr.setRequestHeader('Content-Type', 'application/json')
+
+  let processed = 0
+  let pending = ''
+  let finished = false
+
+  const finish = () => {
+    if (finished) return
+    finished = true
+    onDone()
+  }
+
+  const processLines = () => {
+    const newData = xhr.responseText.substring(processed)
+    processed = xhr.responseText.length
+    pending += newData
+    const lines = pending.split('\n')
+    pending = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const obj = JSON.parse(line)
+        if (obj.phase === 'error') {
+          onError(new Error(obj.message || '会诊失败'))
+          finished = true
+          return
+        }
+        onEvent(obj)
+        if (obj.phase === 'done') {
+          finish()
+          return
+        }
+      } catch (e) {
+        // partial JSON
+      }
+    }
+  }
+
+  xhr.onprogress = processLines
+  xhr.onload = function () {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      if (pending.trim()) {
+        try {
+          const obj = JSON.parse(pending.trim())
+          onEvent(obj)
+        } catch (e) {}
+      }
+      finish()
+    } else {
+      finished = true
+      onError(new Error(`HTTP ${xhr.status}`))
+    }
+  }
+  xhr.onerror = function () {
+    if (finished) return
+    finished = true
+    onError(new Error('Network error'))
+  }
+  xhr.onabort = function () {
+    if (finished) return
+    finished = true
+    const err = new Error('Request aborted')
+    err.isAbort = true
+    onError(err)
+  }
+
+  xhr.send(JSON.stringify({ idea, conversation_id: conversationId || '' }))
+
+  return function abort() { xhr.abort() }
+}
+
 export function streamChat(conversationId, content, onChunk, onDone, onError, assistantId, regenerate = false) {
   const xhr = new XMLHttpRequest()
   xhr.open('POST', `${BASE}/conversations/${conversationId}/chat/stream`)
@@ -93,9 +171,10 @@ export function streamChat(conversationId, content, onChunk, onDone, onError, as
         const obj = JSON.parse(line)
         if (obj.done) { finish(); return }
         if (obj.error) { onError(new Error(obj.error), fullContent); finished = true; return }
+        if (obj.thinking) { onChunk(obj.thinking, 'thinking') }
         if (obj.content) {
           fullContent += obj.content
-          onChunk(obj.content)
+          onChunk(obj.content, 'content')
         }
       } catch (e) {
         // partial JSON, will be retried on next chunk
@@ -138,7 +217,9 @@ export function streamChat(conversationId, content, onChunk, onDone, onError, as
   xhr.onabort = function () {
     if (finished) return
     finished = true
-    onError(new Error('Request aborted'), fullContent)
+    const err = new Error('Request aborted')
+    err.isAbort = true
+    onError(err, fullContent)
   }
 
   xhr.send(JSON.stringify({ content, assistant_id: assistantId || '', regenerate }))
@@ -240,4 +321,20 @@ export async function confirmChapterPlan(projectId, chapterNumber) {
 
 export async function reviewChapter(projectId, chapterNumber, content) {
   return request('POST', `/projects/${projectId}/chapters/${chapterNumber}/review`, { chapter_content: content })
+}
+
+export async function getPoints(projectId) {
+  return request('GET', `/projects/${projectId}/points`)
+}
+
+export async function ensurePointConversation(projectId, point) {
+  return request('POST', `/projects/${projectId}/points/${point}/ensure-conversation`)
+}
+
+export async function summarizePoint(projectId, point, conversationId) {
+  return request('POST', `/projects/${projectId}/points/${point}/summarize`, { conversation_id: conversationId })
+}
+
+export async function autoGeneratePoint(projectId, point, conversationId, idea) {
+  return request('POST', `/projects/${projectId}/points/${point}/auto-generate`, { idea, conversation_id: conversationId || '' })
 }

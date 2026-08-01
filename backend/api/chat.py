@@ -7,6 +7,8 @@ from pydantic import BaseModel
 
 from backend.database import get_db, fetch_all, fetch_one
 from backend.agents.base import chat_stream
+from backend.agents.guide_prompts import POINT_CONFIGS
+from backend.agents.guide import POINT_LABELS
 from backend.config import CHAT_HISTORY_LIMIT, SYSTEM_PROMPT
 from backend.services.wiki import (
     detect_scene,
@@ -27,7 +29,26 @@ class ChatRequest(BaseModel):
     regenerate: bool = False
 
 
-async def _build_context_system_prompt(db, project_id: str, user_content: str = "") -> str:
+async def _build_context_system_prompt(db, project_id: str, user_content: str = "", point: str = "") -> str:
+    point_guide = ""
+    if point and point in POINT_CONFIGS:
+        config = POINT_CONFIGS[point]
+        label = POINT_LABELS.get(point, point)
+        intro = config.get("intro", "")
+        fields = config.get("fields", {})
+        fields_text = "\n".join(f"- {k}: {v}" for k, v in fields.items())
+        point_guide = f"""<point_guide priority="critical">
+你正在引导作者确定【{label}】。这是一个专门的点位对话。
+
+点位说明：
+{intro}
+
+本轮需要确定的字段：
+{fields_text}
+
+请在对话中自然地引导作者逐一确定这些字段。基于已确定的背景做个性化引导。
+</point_guide>
+"""
     scene = detect_scene(user_content)
     logger.info("[context] project=%s scene=%s", project_id, scene)
 
@@ -128,7 +149,7 @@ async def _build_context_system_prompt(db, project_id: str, user_content: str = 
         )
 
     context_body = assemble_context(layer1, layer2, layer3, chronicle_text)
-    context_body = chapter_plan_prefix + context_body
+    context_body = point_guide + chapter_plan_prefix + context_body
 
     total_tokens = estimate_tokens(context_body)
     logger.info(
@@ -234,6 +255,7 @@ async def stream_chat(conversation_id: str, body: ChatRequest):
             body.content,
             body.assistant_id or "",
             body.regenerate,
+            conv.get("point") or "",
         ),
         media_type="application/x-ndjson",
     )
@@ -245,6 +267,7 @@ async def _chat_stream_generator(
     user_content: str,
     assistant_id: str,
     regenerate: bool,
+    point: str = "",
 ):
     db = await get_db()
 
@@ -292,7 +315,7 @@ async def _chat_stream_generator(
         recent_history = recent_history[1:]
 
     system_prompt_override, assistant_model = await _get_assistant_prompt(db, assistant_id)
-    fixed_context = await _build_context_system_prompt(db, project_id, user_content)
+    fixed_context = await _build_context_system_prompt(db, project_id, user_content, point)
 
     if system_prompt_override:
         final_system_prompt = system_prompt_override + "\n\n" + fixed_context
@@ -305,9 +328,12 @@ async def _chat_stream_generator(
 
     full_reply = ""
     try:
-        async for chunk in chat_stream(messages, system_prompt=final_system_prompt, model=assistant_model):
-            full_reply += chunk
-            yield json.dumps({"content": chunk}, ensure_ascii=False) + "\n"
+        async for kind, chunk in chat_stream(messages, system_prompt=final_system_prompt, model=assistant_model):
+            if kind == "reasoning":
+                yield json.dumps({"thinking": chunk}, ensure_ascii=False) + "\n"
+            else:
+                full_reply += chunk
+                yield json.dumps({"content": chunk}, ensure_ascii=False) + "\n"
     except Exception as e:
         logger.error("[stream] LLM error for conversation=%s: %s", conversation_id, e, exc_info=True)
         if full_reply:

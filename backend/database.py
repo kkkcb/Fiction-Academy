@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
+    point TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -128,6 +129,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_project_type_status
 CREATE INDEX IF NOT EXISTS idx_workspace_project_sort
     ON workspace_items(project_id, sort_order);
 """),
+    (7, "add_conversations_point_column", "ALTER TABLE conversations ADD COLUMN point TEXT"),
 ]
 
 _db: aiosqlite.Connection | None = None
