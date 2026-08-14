@@ -5,6 +5,7 @@ export interface Project {
   name: string
   genre?: string | null
   chapter_name_template?: string
+  rules_text?: string
   created_at?: string
   updated_at?: string
 }
@@ -222,3 +223,122 @@ export type PointKey =
 
 export type AssistantInputData = Record<string, unknown>
 export type WorkspaceItemData = Record<string, unknown>
+
+export type KgEntityType = 'character' | 'location' | 'faction' | 'item' | 'event'
+export type KgKnowledgeLayer = 'truth' | 'revealed' | 'foreshadow'
+
+export interface KgEntity {
+  id: ID
+  project_id: ID
+  entity_type: KgEntityType
+  name: string
+  aliases?: string[]
+  properties?: Record<string, unknown>
+  knowledge_layer: KgKnowledgeLayer
+  chapter_from?: number | null
+  chapter_to?: number | null
+  source?: string
+  confidence?: number
+  summary?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface KgRelation {
+  id: ID
+  project_id: ID
+  subject_id: ID
+  subject_name?: string
+  subject_type?: KgEntityType
+  predicate: string
+  object_id: ID
+  object_name?: string
+  object_type?: KgEntityType
+  direction?: 'directed' | 'bidirectional'
+  properties?: Record<string, unknown>
+  knowledge_layer: KgKnowledgeLayer
+  chapter_from?: number | null
+  chapter_to?: number | null
+  confidence?: number
+  created_at?: string
+}
+
+export interface KgGraph {
+  entities: KgEntity[]
+  relations: KgRelation[]
+}
+
+export interface KgEntityInput {
+  entity_type: KgEntityType
+  name: string
+  aliases?: string[]
+  properties?: Record<string, unknown>
+  knowledge_layer?: KgKnowledgeLayer
+  chapter_from?: number | null
+  chapter_to?: number | null
+  summary?: string
+}
+
+export interface KgRelationInput {
+  subject_id: ID
+  predicate: string
+  object_id: ID
+  direction?: 'directed' | 'bidirectional'
+  properties?: Record<string, unknown>
+  knowledge_layer?: KgKnowledgeLayer
+  chapter_from?: number | null
+  chapter_to?: number | null
+}
+
+export interface KgExtractStats {
+  entities_new: number
+  entities_updated: number
+  relations_new: number
+  relations_dup: number
+}
+
+export interface KgExtractResult {
+  extraction: { entities: unknown[]; relations: unknown[] }
+  stats: KgExtractStats
+}
+
+export type GoalStatus = 'planning' | 'executing' | 'completed' | 'cancelled'
+export type GoalStepStatus = 'pending' | 'executing' | 'completed' | 'skipped'
+
+export interface GoalDimension {
+  name: string
+  status: 'complete' | 'partial' | 'missing'
+  detail: string
+}
+
+export interface GoalAnalysis {
+  dimensions?: GoalDimension[]
+  completion_rate?: number
+  priority_gaps?: string[]
+  error?: string
+}
+
+export interface GoalStep {
+  index: number
+  title: string
+  dimension: string
+  description: string
+  step_type: string
+  questions: string[]
+  status: GoalStepStatus
+  result: string
+  saved_item_id: string | null
+}
+
+export interface GoalState {
+  goal_id: string
+  project_id: ID
+  description: string
+  goal_type: string
+  status: GoalStatus
+  analysis: GoalAnalysis
+  steps: GoalStep[]
+  current_step: number
+  summary: string
+  created_at: string
+}

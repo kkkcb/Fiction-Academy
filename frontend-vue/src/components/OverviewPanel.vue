@@ -1,12 +1,20 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { WorkspaceItem, WorkspaceItemType, ID } from '../types'
 import { useAppStore } from '../stores/app'
 import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, type PointNavEntry } from '../utils/format'
+import KgGraphPanel from './KgGraphPanel.vue'
+import GoalPanel from './GoalPanel.vue'
 
 const store = useAppStore()
-const { currentProjectId, workspaceItems, chronicle } = storeToRefs(store)
+const { currentProjectId, currentProject, workspaceItems, chronicle, goalState, lintResult, lintLoading } = storeToRefs(store)
+
+const viewMode = ref<'overview' | 'graph' | 'goal'>('overview')
+
+watch(goalState, (g) => {
+  if (g && g.status !== 'cancelled') viewMode.value = 'goal'
+})
 
 const archivedPoints = computed(() =>
   POINT_NAV.map(nav => {
@@ -88,18 +96,140 @@ const chronicleHasData = computed(() => {
   if (!c) return false
   return !!(c.timeline?.length || c.characters?.length || c.key_events?.length)
 })
+
+const projectRules = computed(() => currentProject.value?.rules_text ?? '')
+const hasRules = computed(() => projectRules.value.trim().length > 0)
+
+const editingRules = ref<boolean>(false)
+const rulesText = ref<string>('')
+const savingRules = ref<boolean>(false)
+
+watch(currentProject, (p) => {
+  editingRules.value = false
+  rulesText.value = p?.rules_text ?? ''
+}, { immediate: true })
+
+function startEditRules() {
+  rulesText.value = projectRules.value
+  editingRules.value = true
+}
+
+function cancelEditRules() {
+  editingRules.value = false
+  rulesText.value = projectRules.value
+}
+
+async function saveRules() {
+  savingRules.value = true
+  try {
+    await store.updateProjectRules(rulesText.value)
+    editingRules.value = false
+  } finally {
+    savingRules.value = false
+  }
+}
+
+function runConsistencyLint() {
+  if (!currentProjectId.value) return
+  store.runLint(currentProjectId.value)
+}
+
+const LINT_ICON: Record<string, string> = { error: '🔴', warning: '🟡', info: '🔵' }
+const lintScore = computed(() => {
+  const s = lintResult.value?.consistency_score ?? 0
+  return Math.round(s * 100)
+})
 </script>
 
 <template>
   <aside class="sidebar-right">
     <div class="overview-header">
-      <span>总览</span>
-      <button class="btn btn-sm" title="添加设定" aria-label="添加设定" @click="showCreate = true">
+      <div class="overview-tabs">
+        <button class="ov-tab" :class="{ active: viewMode === 'overview' }" @click="viewMode = 'overview'">总览</button>
+        <button class="ov-tab" :class="{ active: viewMode === 'graph' }" @click="viewMode = 'graph'">知识图谱</button>
+        <button class="ov-tab" :class="{ active: viewMode === 'goal' }" @click="viewMode = 'goal'">
+          目标<span v-if="goalState" class="goal-tab-dot"></span>
+        </button>
+      </div>
+      <button v-if="viewMode === 'overview'" class="btn btn-sm" title="添加设定" aria-label="添加设定" @click="showCreate = true">
         <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" width="12" height="12"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </div>
 
-    <div class="overview-body">
+    <KgGraphPanel v-if="viewMode === 'graph'" class="overview-graph-host" />
+
+    <GoalPanel v-else-if="viewMode === 'goal'" class="overview-graph-host" />
+
+    <div v-else class="overview-body">
+      <div class="rules-card">
+        <div class="rules-card-header">
+          <span class="rules-card-title">创作守则</span>
+          <span class="rules-priority-badge">最高优先级</span>
+        </div>
+
+        <template v-if="editingRules">
+          <div class="rules-hint">本项目的红线、风格、偏好。AI 在任何创作中都会严格遵守，不得违反。</div>
+          <textarea
+            v-model="rulesText"
+            class="rules-textarea"
+            rows="8"
+            placeholder="例如：&#10;- 禁止出现真实地名、人名&#10;- 保持克制冷静的叙事语调&#10;- 每章 3000 字左右&#10;- 对话占比不低于 40%"
+            :disabled="savingRules"
+          ></textarea>
+          <div class="rules-actions">
+            <button class="btn btn-sm" :disabled="savingRules" @click="cancelEditRules">取消</button>
+            <button class="btn btn-sm btn-primary" :disabled="savingRules" @click="saveRules">
+              {{ savingRules ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </template>
+
+        <template v-else-if="hasRules">
+          <div class="rules-view markdown-body">{{ projectRules }}</div>
+          <div class="rules-actions">
+            <button class="btn-link" aria-label="编辑创作守则" @click="startEditRules">编辑</button>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="rules-empty">尚未设置创作守则</div>
+          <div class="rules-actions">
+            <button class="btn-link" @click="startEditRules">+ 添加守则</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="lint-card">
+        <div class="lint-card-header">
+          <span class="lint-card-title">一致性检测</span>
+          <button class="btn btn-sm" :disabled="lintLoading" @click="runConsistencyLint">
+            {{ lintLoading ? '检测中…' : lintResult ? '重新检测' : '开始检测' }}
+          </button>
+        </div>
+        <template v-if="lintResult">
+          <div class="lint-rate-bar">
+            <div class="lint-rate-fill" :style="{ width: lintScore + '%', background: lintScore >= 70 ? '#059669' : lintScore >= 40 ? '#d97706' : '#dc2626' }"></div>
+            <span class="lint-rate-text">一致性 {{ lintScore }}%</span>
+          </div>
+          <div class="lint-summary">{{ lintResult.summary }}</div>
+          <div v-if="lintResult.issues.length" class="lint-issues">
+            <div v-for="(issue, i) in lintResult.issues" :key="i" class="lint-issue" :class="issue.severity">
+              <span class="lint-issue-icon">{{ LINT_ICON[issue.severity] || '❓' }}</span>
+              <div class="lint-issue-body">
+                <div class="lint-issue-desc">{{ issue.description }}</div>
+                <div class="lint-issue-meta">
+                  <span class="lint-issue-cat">{{ issue.category }}</span>
+                  <span v-if="issue.location" class="lint-issue-loc">📍 {{ issue.location }}</span>
+                </div>
+                <div v-if="issue.suggestion" class="lint-issue-sug">{{ issue.suggestion }}</div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="lint-no-issues">✅ 未发现一致性问题</div>
+        </template>
+        <div v-else-if="!lintLoading" class="lint-hint">扫描工作台和知识图谱，自动检测矛盾、冲突和缺漏</div>
+      </div>
+
       <div v-if="archivedPoints.length > 0" class="overview-section">
         <div
           v-for="{ nav, item } in archivedPoints"
@@ -231,4 +361,148 @@ const chronicleHasData = computed(() => {
 .overview-empty {
   padding: 40px 16px;
 }
+
+.rules-card {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-lighter);
+}
+.rules-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.rules-card-title {
+  font-family: var(--font-serif), serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+.rules-priority-badge {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  color: #fff;
+  background: var(--accent);
+  white-space: nowrap;
+}
+.rules-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.rules-view {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 2px 0 4px;
+}
+.rules-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+  font-style: italic;
+}
+.rules-textarea {
+  width: 100%;
+  min-height: 160px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 8px 10px;
+  resize: vertical;
+  margin-bottom: 8px;
+  font-family: var(--font-serif), serif;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.rules-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-lighter);
+}
+.rules-textarea::placeholder {
+  color: var(--text-muted, #999);
+  font-style: italic;
+}
+.rules-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.overview-tabs { display: flex; gap: 2px; }
+.ov-tab {
+  font-size: 12px; padding: 4px 12px; border: none; background: transparent;
+  color: var(--text-secondary); cursor: pointer; border-radius: var(--radius-sm);
+  font-family: var(--font-serif), serif; transition: all 0.15s;
+}
+.ov-tab:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.ov-tab.active { color: var(--accent); background: var(--accent-lighter); font-weight: 600; }
+.goal-tab-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); margin-left: 4px; vertical-align: middle;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.overview-graph-host {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  padding: 0 12px 12px; min-height: 0;
+}
+
+.lint-card {
+  margin-bottom: 16px; padding: 12px 14px;
+  border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+.lint-card-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.lint-card-title {
+  font-family: var(--font-serif), serif; font-size: 13px; font-weight: 600;
+  color: var(--text-primary); letter-spacing: 0.02em;
+}
+.lint-rate-bar {
+  position: relative; height: 18px; background: var(--bg-secondary);
+  border-radius: var(--radius-full); overflow: hidden; margin-bottom: 8px;
+}
+.lint-rate-fill { height: 100%; border-radius: var(--radius-full); transition: width 0.5s var(--ease-out); }
+.lint-rate-text {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 10px; font-weight: 600; color: var(--text-primary); font-family: var(--font-mono), monospace;
+  white-space: nowrap;
+}
+.lint-summary { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; line-height: 1.5; }
+.lint-issues { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
+.lint-issue {
+  display: flex; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm);
+  background: var(--bg-secondary); border-left: 3px solid var(--border-color);
+}
+.lint-issue.error { border-left-color: #dc2626; }
+.lint-issue.warning { border-left-color: #d97706; }
+.lint-issue.info { border-left-color: #0891b2; }
+.lint-issue-icon { flex-shrink: 0; font-size: 11px; }
+.lint-issue-body { flex: 1; min-width: 0; }
+.lint-issue-desc { font-size: 11px; color: var(--text-primary); line-height: 1.5; }
+.lint-issue-meta { display: flex; gap: 8px; margin-top: 2px; flex-wrap: wrap; }
+.lint-issue-cat { font-size: 9px; color: var(--accent); font-weight: 500; }
+.lint-issue-loc { font-size: 9px; color: var(--text-muted); }
+.lint-issue-sug { font-size: 10px; color: var(--text-secondary); margin-top: 3px; font-style: italic; }
+.lint-no-issues { font-size: 12px; color: #059669; padding: 4px 0; }
+.lint-hint { font-size: 11px; color: var(--text-muted); padding: 4px 0; line-height: 1.5; }
 </style>

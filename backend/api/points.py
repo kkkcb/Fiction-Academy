@@ -11,6 +11,7 @@ from backend.agents.base import chat_json
 from backend.agents.guide_prompts import POINT_CONFIGS
 from backend.agents.guide import POINT_ORDER, POINT_LABELS
 from backend.agents.expert_panel import run_expert_panel
+from backend.services.rules import get_rules_injection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -307,6 +308,9 @@ async def expert_consult(project_id: str, point: str, body: ExpertConsultBody):
 
     db = await get_db()
     background = await _load_background(db, project_id, point)
+    rules_inject = await get_rules_injection(project_id)
+    if rules_inject:
+        background = rules_inject + background
     config = POINT_CONFIGS[point]
     label = POINT_LABELS.get(point, point)
     intro = config.get("intro", "")
@@ -459,6 +463,9 @@ async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBod
             )
     background_text = "\n\n".join(background_parts) if background_parts else "（无）"
 
+    rules_inject = await get_rules_injection(project_id)
+    rules_section = rules_inject if rules_inject else ""
+
     config = POINT_CONFIGS[point]
     label = POINT_LABELS.get(point, point)
     intro = config.get("intro", "")
@@ -466,7 +473,7 @@ async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBod
     fields_hint = json.dumps(fields, ensure_ascii=False, indent=2)
 
     prompt = f"""作者想创作一部网文，现在需要确定【{label}】。
-
+{rules_section}
 ## 作者的原始想法
 {body.idea}
 

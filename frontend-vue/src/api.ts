@@ -16,6 +16,13 @@ import type {
   StreamAbort,
   StreamError,
   ID,
+  KgGraph,
+  KgEntity,
+  KgEntityInput,
+  KgRelationInput,
+  KgExtractResult,
+  GoalState,
+  GoalStep,
 } from './types'
 
 const BASE = '/api'
@@ -57,7 +64,7 @@ export function getProject(id: ID): Promise<Project> {
   return request<Project>('GET', `/projects/${id}`)
 }
 
-export function createProject(data: { name: string; genre?: string }): Promise<Project> {
+export function createProject(data: { name: string; genre?: string; rules_text?: string }): Promise<Project> {
   return request<Project>('POST', '/projects', data)
 }
 
@@ -373,4 +380,91 @@ export function summarizePoint(projectId: ID, point: string, conversationId: ID)
 
 export function autoGeneratePoint(projectId: ID, point: string, conversationId: ID | '', idea: string): Promise<{ content: string; metadata?: Record<string, unknown> }> {
   return request('POST', `/projects/${projectId}/points/${point}/auto-generate`, { idea, conversation_id: conversationId || '' })
+}
+
+export function getKgGraph(projectId: ID, chapter?: number, layers?: string[]): Promise<KgGraph> {
+  const params = new URLSearchParams()
+  if (chapter !== undefined) params.set('chapter', String(chapter))
+  if (layers && layers.length) params.set('layers', layers.join(','))
+  const qs = params.toString()
+  return request<KgGraph>('GET', `/projects/${projectId}/kg/graph${qs ? '?' + qs : ''}`)
+}
+
+export function listKgEntities(projectId: ID, type?: string, layer?: string): Promise<KgEntity[]> {
+  const params = new URLSearchParams()
+  if (type) params.set('type', type)
+  if (layer) params.set('layer', layer)
+  const qs = params.toString()
+  return request<KgEntity[]>('GET', `/projects/${projectId}/kg/entities${qs ? '?' + qs : ''}`)
+}
+
+export function createKgEntity(projectId: ID, data: KgEntityInput): Promise<KgEntity> {
+  return request<KgEntity>('POST', `/projects/${projectId}/kg/entities`, data)
+}
+
+export function updateKgEntity(entityId: ID, data: Partial<KgEntityInput>): Promise<KgEntity> {
+  return request<KgEntity>('PUT', `/kg/entities/${entityId}`, data)
+}
+
+export async function deleteKgEntity(entityId: ID): Promise<void> {
+  await request<void>('DELETE', `/kg/entities/${entityId}`)
+}
+
+export function createKgRelation(projectId: ID, data: KgRelationInput): Promise<unknown> {
+  return request('POST', `/projects/${projectId}/kg/relations`, data)
+}
+
+export async function deleteKgRelation(relationId: ID): Promise<void> {
+  await request<void>('DELETE', `/kg/relations/${relationId}`)
+}
+
+export function extractKg(projectId: ID, data: { text?: string; conversation_id?: string; message_limit?: number }): Promise<KgExtractResult> {
+  return request<KgExtractResult>('POST', `/projects/${projectId}/kg/extract`, data)
+}
+
+export function extractKgFromItem(projectId: ID, itemId: ID): Promise<KgExtractResult> {
+  return request<KgExtractResult>('POST', `/projects/${projectId}/kg/extract-item/${itemId}`)
+}
+
+export function startGoal(projectId: ID, description: string): Promise<GoalState> {
+  return request<GoalState>('POST', `/projects/${projectId}/goal/start`, { description })
+}
+
+export function getGoal(projectId: ID, goalId: ID): Promise<GoalState> {
+  return request<GoalState>('GET', `/projects/${projectId}/goal/${goalId}`)
+}
+
+export function confirmGoalPlan(projectId: ID, goalId: ID, steps?: GoalStep[]): Promise<GoalState> {
+  return request<GoalState>('POST', `/projects/${projectId}/goal/${goalId}/confirm-plan`, { steps })
+}
+
+export function executeGoalStep(projectId: ID, goalId: ID, stepIndex: number, userInput?: string): Promise<GoalState> {
+  return request<GoalState>('POST', `/projects/${projectId}/goal/${goalId}/execute-step`, { step_index: stepIndex, user_input: userInput || '' })
+}
+
+export function skipGoalStep(projectId: ID, goalId: ID, stepIndex: number): Promise<GoalState> {
+  return request<GoalState>('POST', `/projects/${projectId}/goal/${goalId}/skip`, { step_index: stepIndex })
+}
+
+export function cancelGoal(projectId: ID, goalId: ID): Promise<GoalState> {
+  return request<GoalState>('POST', `/projects/${projectId}/goal/${goalId}/cancel`)
+}
+
+export interface LintIssue {
+  severity: 'error' | 'warning' | 'info'
+  category: string
+  description: string
+  location: string
+  suggestion: string
+}
+
+export interface LintResult {
+  issues: LintIssue[]
+  summary: string
+  consistency_score: number
+  error?: string
+}
+
+export function lintProject(projectId: ID): Promise<LintResult> {
+  return request<LintResult>('POST', `/projects/${projectId}/lint`)
 }

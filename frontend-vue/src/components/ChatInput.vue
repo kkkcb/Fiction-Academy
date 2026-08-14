@@ -62,14 +62,18 @@ function doSend() {
   if (!content || isStreaming.value) return
 
   const consultMatch = content.match(/^\/consult\s+([\s\S]+)/i)
-  const goalMatch = content.match(/^\/goal\s+([\s\S]+)/i)
+  const genMatch = content.match(/^\/gen\s+([\s\S]+)/i)
+  const missionMatch = content.match(/^\/goal\s+([\s\S]+)/i)
 
   if (consultMatch) {
     if (!currentPoint.value || activeMode.value !== 'point') return
     store.expertConsult(currentProjectId.value!, currentPoint.value, consultMatch[1].trim())
-  } else if (goalMatch) {
+  } else if (genMatch) {
     if (!currentPoint.value || activeMode.value !== 'point') return
-    store.goalGenerate(currentProjectId.value!, currentPoint.value, goalMatch[1].trim())
+    store.goalGenerate(currentProjectId.value!, currentPoint.value, genMatch[1].trim())
+  } else if (missionMatch) {
+    if (!currentProjectId.value) return
+    store.startGoal(currentProjectId.value, missionMatch[1].trim())
   } else if (currentConversationId.value) {
     store.sendMessage(currentConversationId.value, content)
   }

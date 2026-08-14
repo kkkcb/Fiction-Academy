@@ -40,7 +40,8 @@ export interface SlashCommand {
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: '/consult', icon: 'target', title: '专家会诊', desc: '召集五位创作专家圆桌讨论，主线策划统率全局后给出裁决', pointOnly: true },
-  { cmd: '/goal', icon: 'bolt', title: '快速生成', desc: '根据一句话想法，AI 直接生成完整的点位设定', pointOnly: true },
+  { cmd: '/gen', icon: 'bolt', title: '快速生成', desc: '根据一句话想法，AI 直接生成完整的点位设定', pointOnly: true },
+  { cmd: '/goal', icon: 'bolt', title: '目标模式', desc: '给出创作目标，AI 自主拆解任务、逐步执行、反向确认', pointOnly: false },
 ]
 
 export const EXPERT_COLORS: Record<string, string> = {
@@ -71,7 +72,7 @@ export function formatTime(ts: string | null | undefined): string {
 }
 
 export interface ParsedCommand {
-  type: 'consult' | 'goal'
+  type: 'consult' | 'gen' | 'mission'
   icon: IconName
   label: string
   idea: string
@@ -81,8 +82,10 @@ export function parseCommand(content: unknown): ParsedCommand | null {
   if (typeof content !== 'string') return null
   const consult = content.match(/^\/consult\s+([\s\S]+)/i)
   if (consult) return { type: 'consult', icon: 'target', label: '专家会诊', idea: consult[1].trim() }
-  const goal = content.match(/^\/goal\s+([\s\S]+)/i)
-  if (goal) return { type: 'goal', icon: 'bolt', label: '快速生成', idea: goal[1].trim() }
+  const gen = content.match(/^\/gen\s+([\s\S]+)/i)
+  if (gen) return { type: 'gen', icon: 'bolt', label: '快速生成', idea: gen[1].trim() }
+  const mission = content.match(/^\/goal\s+([\s\S]+)/i)
+  if (mission) return { type: 'mission', icon: 'bolt', label: '目标模式', idea: mission[1].trim() }
   return null
 }
 

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import * as api from '../api'
 import type {
   Project,
@@ -22,6 +22,12 @@ import type {
   StreamError,
   ChatChunkType,
   ID,
+  KgGraph,
+  KgEntityInput,
+  KgRelationInput,
+  KgKnowledgeLayer,
+  GoalState,
+  GoalStep,
 } from '../types'
 
 let _navToken = 0
@@ -60,6 +66,10 @@ export const useAppStore = defineStore('app', () => {
 
   const projects = ref<Project[]>([])
 
+  const currentProject = computed<Project | null>(() =>
+    projects.value.find(p => p.id === currentProjectId.value) ?? null
+  )
+
   const conversations = ref<Conversation[]>([])
   const currentConversationId = ref<ID | null>(null)
   const messages = ref<Message[]>([])
@@ -81,6 +91,15 @@ export const useAppStore = defineStore('app', () => {
   const workspaceItems = ref<WorkspaceItem[]>([])
 
   const chronicle = ref<Chronicle | null>(null)
+
+  const kgGraph = ref<KgGraph>({ entities: [], relations: [] })
+  const kgLoading = ref<boolean>(false)
+
+  const goalState = ref<GoalState | null>(null)
+  const goalLoading = ref<boolean>(false)
+
+  const lintResult = ref<import('../api').LintResult | null>(null)
+  const lintLoading = ref<boolean>(false)
 
   const error = ref<string | null>(null)
 
@@ -123,10 +142,11 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function createProject(name: string, genre?: string) {
+  async function createProject(name: string, genre?: string, rulesText?: string) {
     try {
-      const data: { name: string; genre?: string } = { name }
+      const data: { name: string; genre?: string; rules_text?: string } = { name }
       if (genre) data.genre = genre
+      if (rulesText) data.rules_text = rulesText
       const project = await api.createProject(data)
       projects.value = [project, ...projects.value]
       error.value = null
@@ -134,6 +154,17 @@ export const useAppStore = defineStore('app', () => {
     } catch (e) {
       error.value = (e as Error).message
       return null
+    }
+  }
+
+  async function updateProjectRules(rulesText: string) {
+    if (!currentProjectId.value) return
+    try {
+      const updated = await api.updateProject(currentProjectId.value, { rules_text: rulesText })
+      projects.value = projects.value.map(p => p.id === updated.id ? updated : p)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
     }
   }
 
@@ -370,6 +401,178 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function fetchKgGraph(projectId: ID, chapter?: number, layers?: KgKnowledgeLayer[]) {
+    kgLoading.value = true
+    try {
+      kgGraph.value = await api.getKgGraph(projectId, chapter, layers)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    } finally {
+      kgLoading.value = false
+    }
+  }
+
+  async function startGoal(projectId: ID, description: string) {
+    goalLoading.value = true
+    error.value = null
+    try {
+      goalState.value = await api.startGoal(projectId, description)
+    } catch (e) {
+      error.value = (e as Error).message
+    } finally {
+      goalLoading.value = false
+    }
+  }
+
+  async function confirmGoalPlan(projectId: ID, goalId: ID, steps?: GoalStep[]) {
+    goalLoading.value = true
+    try {
+      goalState.value = await api.confirmGoalPlan(projectId, goalId, steps)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    } finally {
+      goalLoading.value = false
+    }
+  }
+
+  async function executeGoalStep(projectId: ID, goalId: ID, stepIndex: number, userInput?: string) {
+    goalLoading.value = true
+    try {
+      goalState.value = await api.executeGoalStep(projectId, goalId, stepIndex, userInput)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    } finally {
+      goalLoading.value = false
+    }
+  }
+
+  async function skipGoalStep(projectId: ID, goalId: ID, stepIndex: number) {
+    goalLoading.value = true
+    try {
+      goalState.value = await api.skipGoalStep(projectId, goalId, stepIndex)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    } finally {
+      goalLoading.value = false
+    }
+  }
+
+  async function cancelGoal(projectId: ID, goalId: ID) {
+    goalLoading.value = true
+    try {
+      goalState.value = await api.cancelGoal(projectId, goalId)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    } finally {
+      goalLoading.value = false
+    }
+  }
+
+  function clearGoal() {
+    goalState.value = null
+  }
+
+  async function runLint(projectId: ID) {
+    lintLoading.value = true
+    error.value = null
+    try {
+      lintResult.value = await api.lintProject(projectId)
+    } catch (e) {
+      error.value = (e as Error).message
+    } finally {
+      lintLoading.value = false
+    }
+  }
+
+  function clearLint() {
+    lintResult.value = null
+  }
+
+  async function createKgEntity(projectId: ID, data: KgEntityInput) {
+    try {
+      await api.createKgEntity(projectId, data)
+      await fetchKgGraph(projectId)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
+  async function updateKgEntity(projectId: ID, entityId: ID, data: Partial<KgEntityInput>) {
+    try {
+      await api.updateKgEntity(entityId, data)
+      await fetchKgGraph(projectId)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
+  async function deleteKgEntity(projectId: ID, entityId: ID) {
+    try {
+      await api.deleteKgEntity(entityId)
+      await fetchKgGraph(projectId)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
+  async function createKgRelation(projectId: ID, data: KgRelationInput) {
+    try {
+      await api.createKgRelation(projectId, data)
+      await fetchKgGraph(projectId)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
+  async function deleteKgRelation(projectId: ID, relationId: ID) {
+    try {
+      await api.deleteKgRelation(relationId)
+      await fetchKgGraph(projectId)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
+  async function extractKg(projectId: ID, opts: { text?: string; conversation_id?: string; message_limit?: number } = {}) {
+    kgLoading.value = true
+    try {
+      const result = await api.extractKg(projectId, opts)
+      await fetchKgGraph(projectId)
+      error.value = null
+      return result
+    } catch (e) {
+      error.value = (e as Error).message
+      return null
+    } finally {
+      kgLoading.value = false
+    }
+  }
+
+  async function extractKgFromItem(projectId: ID, itemId: ID) {
+    kgLoading.value = true
+    try {
+      const result = await api.extractKgFromItem(projectId, itemId)
+      await fetchKgGraph(projectId)
+      error.value = null
+      return result
+    } catch (e) {
+      error.value = (e as Error).message
+      return null
+    } finally {
+      kgLoading.value = false
+    }
+  }
+
   async function fetchPoints(projectId: ID) {
     try {
       const data: PointsData = await api.getPoints(projectId)
@@ -428,7 +631,7 @@ export const useAppStore = defineStore('app', () => {
   async function goalGenerate(projectId: ID, point: string, idea: string) {
     const targetConvId = currentConversationId.value
     const baseMessages = messages.value
-    const userMsg: Message = { role: 'user', content: `/goal ${idea}` }
+    const userMsg: Message = { role: 'user', content: `/gen ${idea}` }
     messages.value = [...baseMessages, userMsg]
     isStreaming.value = true
     streamingContent.value = ''
@@ -730,6 +933,7 @@ export const useAppStore = defineStore('app', () => {
   return {
     route,
     currentProjectId,
+    currentProject,
     projects,
     conversations,
     currentConversationId,
@@ -747,12 +951,19 @@ export const useAppStore = defineStore('app', () => {
     currentAssistantId,
     workspaceItems,
     chronicle,
+    kgGraph,
+    kgLoading,
+    goalState,
+    goalLoading,
+    lintResult,
+    lintLoading,
     error,
     _currentAbort,
 
     deleteProject,
     fetchProjects,
     createProject,
+    updateProjectRules,
     fetchConversations,
     createConversation,
     selectConversation,
@@ -767,6 +978,22 @@ export const useAppStore = defineStore('app', () => {
     deleteWorkspaceItem,
     updateWorkspaceItem,
     fetchChronicle,
+    fetchKgGraph,
+    createKgEntity,
+    updateKgEntity,
+    deleteKgEntity,
+    createKgRelation,
+    deleteKgRelation,
+    extractKg,
+    extractKgFromItem,
+    startGoal,
+    confirmGoalPlan,
+    executeGoalStep,
+    skipGoalStep,
+    cancelGoal,
+    clearGoal,
+    runLint,
+    clearLint,
     fetchPoints,
     selectPoint,
     summarizeAndArchive,

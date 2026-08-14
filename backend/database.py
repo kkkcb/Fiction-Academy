@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS projects (
     name TEXT NOT NULL,
     genre TEXT,
     chapter_name_template TEXT DEFAULT '第{n}章 {title}',
+    rules_text TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -73,6 +74,46 @@ CREATE TABLE IF NOT EXISTS assistants (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS kg_entities (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    entity_type TEXT NOT NULL CHECK(entity_type IN (
+        'character', 'location', 'faction', 'item', 'event'
+    )),
+    name TEXT NOT NULL,
+    aliases TEXT DEFAULT '[]',
+    properties TEXT DEFAULT '{}',
+    knowledge_layer TEXT NOT NULL DEFAULT 'truth' CHECK(knowledge_layer IN (
+        'truth', 'revealed', 'foreshadow'
+    )),
+    chapter_from INTEGER,
+    chapter_to INTEGER,
+    source TEXT DEFAULT 'ai',
+    confidence REAL DEFAULT 1.0,
+    summary TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(project_id, entity_type, name)
+);
+
+CREATE TABLE IF NOT EXISTS kg_relations (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    subject_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    predicate TEXT NOT NULL,
+    object_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    direction TEXT DEFAULT 'directed' CHECK(direction IN ('directed', 'bidirectional')),
+    properties TEXT DEFAULT '{}',
+    knowledge_layer TEXT NOT NULL DEFAULT 'truth' CHECK(knowledge_layer IN (
+        'truth', 'revealed', 'foreshadow'
+    )),
+    chapter_from INTEGER,
+    chapter_to INTEGER,
+    confidence REAL DEFAULT 1.0,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(project_id, subject_id, predicate, object_id)
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT DEFAULT (datetime('now'))
@@ -83,6 +124,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation
 CREATE INDEX IF NOT EXISTS idx_workspace_project_type_status ON workspace_items(project_id, item_type, status);
 CREATE INDEX IF NOT EXISTS idx_workspace_project_sort ON workspace_items(project_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_chronicle_project_id ON chronicle(project_id);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_project_type ON kg_entities(project_id, entity_type);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_project_layer ON kg_entities(project_id, knowledge_layer);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_project ON kg_relations(project_id);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_subject ON kg_relations(subject_id);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_object ON kg_relations(object_id);
 """
 
 MIGRATIONS = [
@@ -130,6 +176,46 @@ CREATE INDEX IF NOT EXISTS idx_workspace_project_sort
     ON workspace_items(project_id, sort_order);
 """),
     (7, "add_conversations_point_column", "ALTER TABLE conversations ADD COLUMN point TEXT"),
+    (8, "add_projects_rules_text", "ALTER TABLE projects ADD COLUMN rules_text TEXT DEFAULT ''"),
+    (9, "add_knowledge_graph_tables", """
+CREATE TABLE IF NOT EXISTS kg_entities (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('character','location','faction','item','event')),
+    name TEXT NOT NULL,
+    aliases TEXT DEFAULT '[]',
+    properties TEXT DEFAULT '{}',
+    knowledge_layer TEXT NOT NULL DEFAULT 'truth' CHECK(knowledge_layer IN ('truth','revealed','foreshadow')),
+    chapter_from INTEGER,
+    chapter_to INTEGER,
+    source TEXT DEFAULT 'ai',
+    confidence REAL DEFAULT 1.0,
+    summary TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(project_id, entity_type, name)
+);
+CREATE TABLE IF NOT EXISTS kg_relations (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    subject_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    predicate TEXT NOT NULL,
+    object_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    direction TEXT DEFAULT 'directed' CHECK(direction IN ('directed','bidirectional')),
+    properties TEXT DEFAULT '{}',
+    knowledge_layer TEXT NOT NULL DEFAULT 'truth' CHECK(knowledge_layer IN ('truth','revealed','foreshadow')),
+    chapter_from INTEGER,
+    chapter_to INTEGER,
+    confidence REAL DEFAULT 1.0,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(project_id, subject_id, predicate, object_id)
+);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_project_type ON kg_entities(project_id, entity_type);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_project_layer ON kg_entities(project_id, knowledge_layer);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_project ON kg_relations(project_id);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_subject ON kg_relations(subject_id);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_object ON kg_relations(object_id);
+"""),
 ]
 
 _db: aiosqlite.Connection | None = None

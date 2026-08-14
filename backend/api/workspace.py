@@ -298,6 +298,19 @@ async def update_item_status(item_id: str, body: StatusUpdate):
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
+        meta = {}
+        if item["metadata"]:
+            try:
+                meta = json.loads(item["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+        if not meta.get("summary"):
+            sum_task = asyncio.create_task(
+                _generate_chapter_summary(item_id, item["title"] or "", item["content"] or "")
+            )
+            _background_tasks.add(sum_task)
+            sum_task.add_done_callback(_background_tasks.discard)
+
     updated = await fetch_one(db, "SELECT * FROM workspace_items WHERE id = ?", (item_id,))
     return updated
 
@@ -513,6 +526,48 @@ async def extract_questions(project_id: str):
         return {"questions": []}
 
     return {"questions": result.get("questions", [])}
+
+
+CHAPTER_SUMMARY_PROMPT = """你是一个小说章节摘要专家。请将以下章节内容浓缩为一段200-300字的摘要，用于后续章节创作时的上下文参考。
+
+摘要要求：
+1. 包含本章的关键剧情进展
+2. 重要角色的行动和变化
+3. 关键冲突和转折
+4. 为后续剧情埋下的伏笔（如有）
+
+只输出摘要正文，不要标题、不要分点、不要任何解释。"""
+
+
+async def _generate_chapter_summary(item_id: str, chapter_title: str, chapter_content: str):
+    try:
+        summary = await chat_text(
+            messages=[{"role": "user", "content": f"章节标题：{chapter_title}\n\n章节内容：\n{chapter_content}"}],
+            system_prompt=CHAPTER_SUMMARY_PROMPT,
+            temperature=0.3,
+        )
+        summary = (summary or "").strip()
+        if not summary:
+            return
+        db = await get_db()
+        row = await fetch_one(db, "SELECT metadata FROM workspace_items WHERE id = ?", (item_id,))
+        if not row:
+            return
+        meta = {}
+        if row["metadata"]:
+            try:
+                meta = json.loads(row["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+        meta["summary"] = summary
+        await db.execute(
+            "UPDATE workspace_items SET metadata = ?, updated_at = datetime('now') WHERE id = ?",
+            (json.dumps(meta, ensure_ascii=False), item_id),
+        )
+        await db.commit()
+        logger.info("[chapter-summary] generated for item %s, len=%d", item_id, len(summary))
+    except Exception as e:
+        logger.warning("[chapter-summary] failed for item %s: %s", item_id, e)
 
 
 async def _trigger_chronicle_update(project_id: str, chapter_title: str, chapter_content: str):

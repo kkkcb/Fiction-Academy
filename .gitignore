@@ -31,9 +31,13 @@ logs/
 
 # Runtime data
 data/
+*.db
 
 # Competitor repos (cloned, already public elsewhere)
 competitors/repos/
+
+# Local scratch / debug scripts
+_dump_history.py
 
 # Build
 dist/

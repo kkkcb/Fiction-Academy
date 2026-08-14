@@ -18,6 +18,8 @@ from backend.services.wiki import (
     assemble_context,
     estimate_tokens,
 )
+from backend.services.rules import get_rules_injection
+from backend.services.kg import build_kg_injection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -30,6 +32,7 @@ class ChatRequest(BaseModel):
 
 
 async def _build_context_system_prompt(db, project_id: str, user_content: str = "", point: str = "") -> str:
+    rules_inject = await get_rules_injection(project_id)
     point_guide = ""
     if point and point in POINT_CONFIGS:
         config = POINT_CONFIGS[point]
@@ -67,7 +70,7 @@ async def _build_context_system_prompt(db, project_id: str, user_content: str = 
     if scene in ("write_chapter", "edit_chapter"):
         chapter_rows = await fetch_all(
             db,
-            "SELECT item_type, title, content, chapter_number FROM workspace_items WHERE project_id = ? AND item_type = 'chapter' AND status IN ('finalized', 'locked') ORDER BY chapter_number DESC LIMIT 3",
+            "SELECT item_type, title, content, metadata, chapter_number FROM workspace_items WHERE project_id = ? AND item_type = 'chapter' AND status IN ('finalized', 'locked') ORDER BY chapter_number DESC LIMIT 5",
             (project_id,),
         )
         chapter_plan_row = await fetch_one(
@@ -88,12 +91,25 @@ async def _build_context_system_prompt(db, project_id: str, user_content: str = 
     for r in chapter_rows:
         title = r["title"] or f"第{r.get('chapter_number', '?')}章"
         content = r["content"] or ""
-        if len(content) > 3000:
+        meta = {}
+        if r.get("metadata"):
+            try:
+                meta = json.loads(r["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+        summary = (meta.get("summary") or "").strip()
+        if summary:
+            content = summary
+            title_prefix = f"### {title}（前情摘要）\n"
+        elif len(content) > 3000:
             content = content[:3000] + "\n...(后续内容省略)"
+            title_prefix = f"### {title}\n"
+        else:
+            title_prefix = f"### {title}\n"
         chapter_pages.append({
             "type": "chapter",
             "title": title,
-            "content": f"### {title}\n{content}",
+            "content": title_prefix + content,
             "keywords": set(),
             "score": 0,
         })
@@ -132,6 +148,7 @@ async def _build_context_system_prompt(db, project_id: str, user_content: str = 
     layer1, layer2, layer3 = apply_token_budget(layer1, layer2, layer3)
 
     chapter_plan_prefix = ""
+    current_chapter = None
     if chapter_plan_row:
         plan_meta = {}
         if chapter_plan_row.get("metadata"):
@@ -140,6 +157,8 @@ async def _build_context_system_prompt(db, project_id: str, user_content: str = 
             except (json.JSONDecodeError, TypeError):
                 pass
         plan_num = chapter_plan_row.get("chapter_number", "?")
+        if isinstance(plan_num, int):
+            current_chapter = plan_num
         chapter_plan_prefix = (
             f"\n\n<chapter_plan priority=\"critical\">\n"
             f"你正在写【第{plan_num}章】，必须严格遵循以下章纲：\n"
@@ -148,8 +167,10 @@ async def _build_context_system_prompt(db, project_id: str, user_content: str = 
             f"注意：核心冲突、爽点设计、断章钩子必须按章纲执行，不要即兴偏离。\n"
         )
 
+    kg_inject = await build_kg_injection(project_id, scene=scene, chapter=current_chapter)
+
     context_body = assemble_context(layer1, layer2, layer3, chronicle_text)
-    context_body = point_guide + chapter_plan_prefix + context_body
+    context_body = rules_inject + kg_inject + point_guide + chapter_plan_prefix + context_body
 
     total_tokens = estimate_tokens(context_body)
     logger.info(
@@ -157,9 +178,20 @@ async def _build_context_system_prompt(db, project_id: str, user_content: str = 
         len(layer1), len(layer2), bool(chronicle_text), total_tokens,
     )
 
-    if context_body:
-        return SYSTEM_PROMPT + "\n\n" + context_body
-    return SYSTEM_PROMPT
+    final_prompt = (SYSTEM_PROMPT + "\n\n" + context_body) if context_body else SYSTEM_PROMPT
+    logger.info(
+        "[context-DEBUG] project=%s rules=%d kg=%d point_guide=%d chapter_plan=%d ws_context=%d total_len=%d | top80=%s",
+        project_id,
+        len(rules_inject),
+        len(kg_inject),
+        len(point_guide),
+        len(chapter_plan_prefix),
+        len(context_body) - len(rules_inject) - len(kg_inject) - len(point_guide) - len(chapter_plan_prefix),
+        len(final_prompt),
+        repr(final_prompt[:80]),
+    )
+
+    return final_prompt
 
 
 async def _get_assistant_prompt(db, assistant_id: str | None) -> tuple[str, str]:

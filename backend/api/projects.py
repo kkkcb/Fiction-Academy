@@ -13,15 +13,17 @@ class ProjectCreate(BaseModel):
     name: str
     genre: Optional[str] = None
     chapter_name_template: Optional[str] = None
+    rules_text: Optional[str] = None
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     genre: Optional[str] = None
     chapter_name_template: Optional[str] = None
+    rules_text: Optional[str] = None
 
 
-_PROJECT_ALLOWED_FIELDS = {"name", "genre", "chapter_name_template"}
+_PROJECT_ALLOWED_FIELDS = {"name", "genre", "chapter_name_template", "rules_text"}
 
 
 @router.get("")
@@ -74,9 +76,9 @@ async def create_project(body: ProjectCreate):
     db = await get_db()
     pid = str(uuid.uuid4())
     await db.execute(
-        """INSERT INTO projects (id, name, genre, chapter_name_template)
-        VALUES (?, ?, ?, ?)""",
-        (pid, body.name, body.genre, body.chapter_name_template),
+        """INSERT INTO projects (id, name, genre, chapter_name_template, rules_text)
+        VALUES (?, ?, ?, ?, ?)""",
+        (pid, body.name, body.genre, body.chapter_name_template, body.rules_text),
     )
     await db.commit()
     return await get_project(pid)
