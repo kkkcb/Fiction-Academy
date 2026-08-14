@@ -29,12 +29,12 @@ async def test_maybe_apply_book_name(client, project_id):
     await client.put(f"/api/projects/{project_id}", json={"name": "我的书"})
     assert await repo.maybe_apply_book_name(db, project_id, {"book_name": "AI起的名"}) is None
 
-    # 未命名项目：书名生效
+    # 未命名项目：书名生效（模型自带的书名号会被剥掉）
     await client.put(f"/api/projects/{project_id}", json={"name": "未命名作品"})
     new_name = await repo.maybe_apply_book_name(db, project_id, {"book_name": "《外卖修仙录》"})
-    assert new_name == "《外卖修仙录》"
+    assert new_name == "外卖修仙录"
     row = await fetch_one(db, "SELECT name FROM projects WHERE id = ?", (project_id,))
-    assert row["name"] == "《外卖修仙录》"
+    assert row["name"] == "外卖修仙录"
 
     # 改名后再次产出书名：不覆盖用户可见名
     assert await repo.maybe_apply_book_name(db, project_id, {"book_name": "另一本书"}) is None

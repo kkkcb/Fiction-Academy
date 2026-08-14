@@ -121,6 +121,7 @@ UNTITLED_NAME = "未命名作品"
 async def maybe_apply_book_name(db, project_id: str, fields: dict) -> str | None:
     """故事核产出书名时，若项目还是占位名则自动命名为书名。返回新名字或 None。"""
     book_name = (fields.get("book_name") or "").strip() if isinstance(fields, dict) else ""
+    book_name = book_name.strip("《》").strip()  # 模型常自带书名号，剥掉避免《《…》》
     if not book_name:
         return None
     row = await fetch_one(db, "SELECT name FROM projects WHERE id = ?", (project_id,))

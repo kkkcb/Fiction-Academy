@@ -82,7 +82,9 @@ ExecStart=${APP_DIR}/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 
 Restart=always
 RestartSec=3
 Environment=FA_DATABASE_PATH=${APP_DIR}/data/fiction_academy.db
-Environment=FA_LLM_TIMEOUT=180
+Environment=FA_LLM_TIMEOUT=600
+Environment=FA_LLM_MAX_TOKENS=16384
+Environment=FA_LLM_MAX_RETRIES=2
 
 [Install]
 WantedBy=multi-user.target

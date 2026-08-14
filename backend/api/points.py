@@ -360,6 +360,11 @@ async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBod
 请基于作者的想法和已确定的前序设定，直接生成完整的【{label}】设定。
 大胆创作，让内容有网文味、有冲突、有爽点。
 
+篇幅硬性要求（超出会被截断导致失败）：
+- summary 控制在 300-600 字
+- 每个字段值不超过 200 字，点到关键即可，不要展开成小作文
+- 整个输出总量控制在 2500 字以内
+
 请输出 JSON：
 {{
   "summary": "一段300-600字的连贯设定描述",
