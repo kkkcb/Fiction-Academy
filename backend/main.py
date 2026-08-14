@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.config import CORS_ORIGINS, STATIC_DIR
+from backend.config import CORS_ORIGINS, STATIC_DIR, VUE_DIST_DIR
 from backend.database import get_db, close_db
 
 
@@ -108,13 +108,16 @@ async def health_check():
     except Exception:
         db_ok = False
 
-    from backend.config import XIAOMI_API_KEY
+    from backend.config import LLM_API_KEY
     return {
         "status": "ok" if db_ok else "degraded",
         "database": db_ok,
-        "llm_configured": bool(XIAOMI_API_KEY),
+        "llm_configured": bool(LLM_API_KEY),
     }
 
 
-if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+# Vue 版是主线前端；dist 已构建则优先托管，否则回退到原生版 frontend/
+_vue_dist = VUE_DIST_DIR if (VUE_DIST_DIR / "index.html").exists() else STATIC_DIR
+if _vue_dist.exists():
+    logging.getLogger(__name__).info("Serving frontend from %s", _vue_dist)
+    app.mount("/", StaticFiles(directory=str(_vue_dist), html=True), name="static")

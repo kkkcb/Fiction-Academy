@@ -49,8 +49,15 @@ async function reloadGraph() {
   await store.fetchKgGraph(projectId, currentChapter.value ?? undefined, activeLayers.value)
 }
 
+let _sliderTimer: ReturnType<typeof setTimeout> | null = null
+
 function onChapterSlider() {
-  reloadGraph()
+  // 滑块高频触发，防抖 300ms 避免请求风暴
+  if (_sliderTimer != null) clearTimeout(_sliderTimer)
+  _sliderTimer = setTimeout(() => {
+    _sliderTimer = null
+    reloadGraph()
+  }, 300)
 }
 
 function resetChapter() {

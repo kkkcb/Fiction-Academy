@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { WorkspaceItem, WorkspaceItemType, ID } from '../types'
 import { useAppStore } from '../stores/app'
-import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, type PointNavEntry } from '../utils/format'
+import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, formatMd, charCount, type PointNavEntry } from '../utils/format'
 import KgGraphPanel from './KgGraphPanel.vue'
 import GoalPanel from './GoalPanel.vue'
 
@@ -89,7 +89,14 @@ async function handleCreate() {
   })
   newItemTitle.value = ''
   showCreate.value = false
+  store.notifySuccess('设定已创建（草稿）')
 }
+
+function onEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && showCreate.value) showCreate.value = false
+}
+onMounted(() => window.addEventListener('keydown', onEsc))
+onUnmounted(() => window.removeEventListener('keydown', onEsc))
 
 const chronicleHasData = computed(() => {
   const c = chronicle.value
@@ -185,7 +192,7 @@ const lintScore = computed(() => {
         </template>
 
         <template v-else-if="hasRules">
-          <div class="rules-view markdown-body">{{ projectRules }}</div>
+          <div class="rules-view markdown-body" v-html="formatMd(projectRules)"></div>
           <div class="rules-actions">
             <button class="btn-link" aria-label="编辑创作守则" @click="startEditRules">编辑</button>
           </div>
@@ -250,7 +257,7 @@ const lintScore = computed(() => {
             </div>
           </template>
           <template v-else>
-            <div class="ov-card-content markdown-body">{{ item.content }}</div>
+            <div class="ov-card-content markdown-body" v-html="formatMd(item.content)"></div>
             <div v-if="metaFields(item).length > 0" class="ov-fields">
               <div v-for="[k, v] in metaFields(item)" :key="k" class="ov-field">
                 <span class="ov-field-key">{{ k }}</span>
@@ -258,6 +265,7 @@ const lintScore = computed(() => {
               </div>
             </div>
             <div class="ov-card-actions">
+              <span class="ov-card-count">{{ charCount(item.content) }}</span>
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`编辑${item.title}`" @click="startEdit(item)">编辑</button>
               <button v-if="item.status === 'draft'" class="btn-link" :aria-label="`审批${item.title}`" @click="approve(item)">通过</button>
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`锁定${item.title}`" @click="lock(item)">锁定</button>
@@ -283,7 +291,7 @@ const lintScore = computed(() => {
             </div>
           </template>
           <template v-else>
-            <div class="ov-card-content markdown-body">{{ item.content }}</div>
+            <div class="ov-card-content markdown-body" v-html="formatMd(item.content)"></div>
             <div class="ov-card-actions">
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`编辑${item.title}`" @click="startEdit(item)">编辑</button>
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`锁定${item.title}`" @click="lock(item)">锁定</button>
@@ -337,8 +345,15 @@ const lintScore = computed(() => {
 
 <style scoped>
 .ov-card-content {
-  white-space: pre-wrap;
   word-break: break-word;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.ov-card-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono), monospace;
+  margin-right: auto;
 }
 .ov-edit-area {
   width: 100%;

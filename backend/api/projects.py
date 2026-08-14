@@ -5,12 +5,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.database import get_db, fetch_all, fetch_one
+from backend.services.repo import UNTITLED_NAME
 
 router = APIRouter()
 
 
 class ProjectCreate(BaseModel):
-    name: str
+    name: str = ""  # 可留空：先创作，AI 在确定故事核（book_name 字段）时自动命名
     genre: Optional[str] = None
     chapter_name_template: Optional[str] = None
     rules_text: Optional[str] = None
@@ -75,10 +76,11 @@ async def get_project(project_id: str):
 async def create_project(body: ProjectCreate):
     db = await get_db()
     pid = str(uuid.uuid4())
+    name = body.name.strip() or UNTITLED_NAME
     await db.execute(
         """INSERT INTO projects (id, name, genre, chapter_name_template, rules_text)
         VALUES (?, ?, ?, ?, ?)""",
-        (pid, body.name, body.genre, body.chapter_name_template, body.rules_text),
+        (pid, name, body.genre, body.chapter_name_template, body.rules_text),
     )
     await db.commit()
     return await get_project(pid)

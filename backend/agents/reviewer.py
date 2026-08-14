@@ -114,6 +114,14 @@ async def review_chapter(
     return result
 
 
+def _with_excerpt(lines: list[str], data: dict) -> str:
+    """结构化字段之外附上设定原文节选，防止 metadata 与正文漂移时审校失据。"""
+    excerpt = (data.get("content_excerpt") or "").strip()
+    if excerpt:
+        lines.append(f"设定原文节选：{excerpt}")
+    return "\n".join(lines)
+
+
 def _format_character_constraints(char_data: dict) -> str:
     if not char_data:
         return "（未设定人物约束，跳过此项）"
@@ -125,7 +133,7 @@ def _format_character_constraints(char_data: dict) -> str:
     lines = [f"姓名：{name}", f"核心欲望：{desire}", "绝对不能做的事（红线）："]
     for rl in red_lines:
         lines.append(f"  - {rl}")
-    return "\n".join(lines)
+    return _with_excerpt(lines, char_data)
 
 
 def _format_world_constraints(world_data: dict) -> str:
@@ -134,7 +142,8 @@ def _format_world_constraints(world_data: dict) -> str:
     power = world_data.get("power_system", "")
     limit = world_data.get("power_limit", "")
     golden = world_data.get("golden_finger", "")
-    return f"力量体系：{power}\n硬限制（必须遵守）：{limit}\n金手指规则：{golden}"
+    lines = [f"力量体系：{power}", f"硬限制（必须遵守）：{limit}", f"金手指规则：{golden}"]
+    return _with_excerpt(lines, world_data)
 
 
 def _format_chapter_plan(plan: dict) -> str:
@@ -162,7 +171,7 @@ def _format_outline_reverse(outline: dict) -> str:
     lines = [f"终点状态：{endpoint}", "关键转折（必经节点）："]
     for t in turns:
         lines.append(f"  - {t}")
-    return "\n".join(lines)
+    return _with_excerpt(lines, outline)
 
 
 def _format_foreshadows(foreshadows: list[dict]) -> str:

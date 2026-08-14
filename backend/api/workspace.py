@@ -7,10 +7,26 @@ from pydantic import BaseModel, field_validator
 from typing import Literal
 
 from backend.database import get_db, fetch_all, fetch_one
-from backend.agents.base import chat_text, chat_json
+from backend.agents.base import chat_text, chat_json, LLMError
+from backend.services import repo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+
+def _log_bg_task_error(task: asyncio.Task):
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error("[bg-task] %s failed: %s", task.get_coro().__name__ if task.get_coro() else "?", exc)
+
+
+def _spawn_bg(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_log_bg_task_error)
 
 _background_tasks: set = set()
 
@@ -292,24 +308,11 @@ async def update_item_status(item_id: str, body: StatusUpdate):
     await db.commit()
 
     if item["item_type"] == "chapter" and new_status in ("finalized", "locked"):
-        task = asyncio.create_task(
-            _trigger_chronicle_update(item["project_id"], item["title"] or "", item["content"] or "")
-        )
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        _spawn_bg(_trigger_chronicle_update(item["project_id"], item["title"] or "", item["content"] or ""))
 
-        meta = {}
-        if item["metadata"]:
-            try:
-                meta = json.loads(item["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                meta = {}
+        meta = repo.parse_meta(item["metadata"])
         if not meta.get("summary"):
-            sum_task = asyncio.create_task(
-                _generate_chapter_summary(item_id, item["title"] or "", item["content"] or "")
-            )
-            _background_tasks.add(sum_task)
-            sum_task.add_done_callback(_background_tasks.discard)
+            _spawn_bg(_generate_chapter_summary(item_id, item["title"] or "", item["content"] or ""))
 
     updated = await fetch_one(db, "SELECT * FROM workspace_items WHERE id = ?", (item_id,))
     return updated
@@ -336,14 +339,14 @@ async def summarize_message(project_id: str, body: SummarizeMessageRequest):
     if not prompt:
         raise HTTPException(status_code=400, detail=f"Unknown item type: {body.item_type}")
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": body.content}],
-        system_prompt=prompt,
-        temperature=0.3,
-    )
-
-    if "error" in result:
-        raise HTTPException(status_code=502, detail="AI 返回格式错误，请重试")
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": body.content}],
+            system_prompt=prompt,
+            temperature=0.3,
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"AI 返回格式错误，请重试（{str(e)[:100]}）")
 
     subtitle = result.get("subtitle", "")
     content = result.get("content", "")
@@ -366,7 +369,7 @@ async def summarize_to_workspace(project_id: str):
     db = await get_db()
     rows = await fetch_all(
         db,
-        "SELECT role, content FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE c.project_id = ? AND m.role = 'user' ORDER BY m.created_at",
+        "SELECT role, content FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE c.project_id = ? AND m.role = 'user' ORDER BY m.created_at, m.rowid",
         (project_id,),
     )
     if not rows:
@@ -374,14 +377,14 @@ async def summarize_to_workspace(project_id: str):
 
     all_text = "\n\n".join(r["content"] for r in rows)
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": all_text}],
-        system_prompt=INSPIRATION_PROMPT,
-        temperature=0.5,
-    )
-
-    if "error" in result:
-        raise HTTPException(status_code=502, detail="AI 返回格式错误，请重试")
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": all_text}],
+            system_prompt=INSPIRATION_PROMPT,
+            temperature=0.5,
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"AI 返回格式错误，请重试（{str(e)[:100]}）")
 
     subtitle = result.get("subtitle", "灵感笔记")
     content = result.get("content", "")
@@ -406,12 +409,7 @@ async def summarize_to_workspace(project_id: str):
         return {"id": existing["id"], "action": "appended", "subtitle": subtitle}
     else:
         item_id = str(uuid.uuid4())
-        sort_row = await fetch_one(
-            db,
-            "SELECT MAX(sort_order) as mx FROM workspace_items WHERE project_id = ?",
-            (project_id,),
-        )
-        sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
+        sort_order = await repo.next_sort_order(db, project_id)
         full_content = f"## {subtitle}\n\n{content}"
         await db.execute(
             """INSERT INTO workspace_items (id, project_id, item_type, status, title, subtitle, content, sort_order)
@@ -433,14 +431,14 @@ async def sync_to_workspace(project_id: str, body: SyncRequest):
 
     user_content = f"已有条目：\n\n{items_text}\n\n---\n\nAI 的最新回复：\n\n{body.ai_message}"
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": user_content}],
-        system_prompt=SYNC_WORKSPACE_PROMPT,
-        temperature=0.3,
-    )
-
-    if "error" in result:
-        raise HTTPException(status_code=502, detail="AI 返回格式错误，请重试")
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": user_content}],
+            system_prompt=SYNC_WORKSPACE_PROMPT,
+            temperature=0.3,
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"AI 返回格式错误，请重试（{str(e)[:100]}）")
 
     updates = result.get("updates", [])
     suggestions = result.get("suggestions", [])
@@ -464,12 +462,7 @@ async def sync_to_workspace(project_id: str, body: SyncRequest):
         content = sug.get("content", "")
         if content:
             item_id = str(uuid.uuid4())
-            sort_row = await fetch_one(
-                db,
-                "SELECT MAX(sort_order) as mx FROM workspace_items WHERE project_id = ?",
-                (project_id,),
-            )
-            sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
+            sort_order = await repo.next_sort_order(db, project_id)
             await db.execute(
                 """INSERT INTO workspace_items (id, project_id, item_type, status, title, content, sort_order)
                    VALUES (?, ?, ?, 'draft', ?, ?, ?)""",
@@ -516,13 +509,13 @@ async def extract_questions(project_id: str):
     if not context.strip():
         return {"questions": []}
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": f"当前项目设定：\n\n{context}"}],
-        system_prompt=EXTRACT_QUESTIONS_PROMPT,
-        temperature=0.5,
-    )
-
-    if "error" in result:
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": f"当前项目设定：\n\n{context}"}],
+            system_prompt=EXTRACT_QUESTIONS_PROMPT,
+            temperature=0.5,
+        )
+    except LLMError:
         return {"questions": []}
 
     return {"questions": result.get("questions", [])}
@@ -553,12 +546,7 @@ async def _generate_chapter_summary(item_id: str, chapter_title: str, chapter_co
         row = await fetch_one(db, "SELECT metadata FROM workspace_items WHERE id = ?", (item_id,))
         if not row:
             return
-        meta = {}
-        if row["metadata"]:
-            try:
-                meta = json.loads(row["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                meta = {}
+        meta = repo.parse_meta(row["metadata"])
         meta["summary"] = summary
         await db.execute(
             "UPDATE workspace_items SET metadata = ?, updated_at = datetime('now') WHERE id = ?",

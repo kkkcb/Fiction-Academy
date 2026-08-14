@@ -1,5 +1,4 @@
 import re
-import json
 import logging
 from typing import Literal
 
@@ -28,31 +27,54 @@ def detect_scene(user_content: str) -> SceneType:
 _CHINESE_STOPWORDS = {
     "的", "了", "是", "在", "和", "与", "或", "也", "都", "就", "还", "又",
     "这", "那", "这个", "那个", "这些", "那些", "什么", "怎么", "为什么",
-    "可以", "能够", "应该", "需要", "必须", "的话", "的话", "一下", "一些",
+    "可以", "能够", "应该", "需要", "必须", "的话", "一下", "一些",
     "一个", "一种", "一边", "一方面", "另外", "此外",
     "我", "你", "他", "她", "它", "我们", "你们", "他们", "她们",
     "着", "过", "中", "上", "下", "里", "外", "前", "后",
     "写", "帮", "给", "让", "使", "被", "把", "到", "向", "对", "为",
+    "没有", "不是", "就是", "还有", "如果", "但是", "然后", "所以",
 }
+
+_jieba_loaded = False
+
+
+def _get_jieba():
+    """延迟加载 jieba（首次构建前缀词典约 0.5s，不阻塞进程启动）。"""
+    global _jieba_loaded
+    import jieba
+    if not _jieba_loaded:
+        jieba.initialize()
+        _jieba_loaded = True
+    return jieba
 
 
 def extract_keywords(*texts: str, min_len: int = 2, max_keywords: int = 30) -> set[str]:
-    keywords = set()
+    """中文用 jieba 分词后过滤停用词；英文按词提取。"""
+    keywords: set[str] = set()
     combined = " ".join(t for t in texts if t)
-    for stopword in _CHINESE_STOPWORDS:
-        combined = combined.replace(stopword, " ")
-    chinese_words = re.findall(r"[\u4e00-\u9fa5]{2,8}", combined)
-    for w in chinese_words:
-        if w in _CHINESE_STOPWORDS:
+
+    try:
+        jieba = _get_jieba()
+        tokens = jieba.lcut(combined)
+    except Exception:  # jieba 不可用时退化为字符 n-gram，保证检索可用
+        logger.warning("[wiki] jieba unavailable, falling back to regex extraction")
+        tokens = re.findall(r"[\u4e00-\u9fa5]+", combined)
+
+    for w in tokens:
+        w = w.strip()
+        if not w or w in _CHINESE_STOPWORDS:
             continue
-        if len(w) < min_len:
-            continue
+        if re.fullmatch(r"[\u4e00-\u9fa5]+", w):
+            if len(w) < min_len:
+                continue
+        else:
+            # 标点、空白等碎片
+            if not re.search(r"[\u4e00-\u9fa5A-Za-z]", w):
+                continue
+            w = w.lower()
+            if len(w) < min_len:
+                continue
         keywords.add(w)
-        if len(keywords) >= max_keywords:
-            break
-    english_words = re.findall(r"[A-Za-z][a-z]{2,}", combined)
-    for w in english_words:
-        keywords.add(w.lower())
         if len(keywords) >= max_keywords:
             break
     return keywords
@@ -149,6 +171,16 @@ def apply_token_budget(
     return l1, l2, l3
 
 
+_TAG_BY_TYPE = {
+    "story_core": "story_core",
+    "world_setting": "world_setting",
+    "character_setting": "characters",
+    "outline": "outline",
+    "outline_reverse": "outline_reverse",
+    "foreshadow": "foreshadow",
+}
+
+
 def assemble_context(
     core_pages: list[dict],
     story_pages: list[dict],
@@ -156,22 +188,16 @@ def assemble_context(
     chronicle_text: str = "",
 ) -> str:
     parts = []
-
-    ws_pages = [p for p in core_pages if p["type"] == "world_setting"]
-    char_pages = [p for p in core_pages if p["type"] == "character_setting"]
-    outline_pages = [p for p in core_pages if p["type"] == "outline"]
-
-    if ws_pages:
-        body = "\n\n".join(p["content"] for p in ws_pages)
-        parts.append(f"<world_setting>\n{body}\n</world_setting>")
-
-    if char_pages:
-        body = "\n\n".join(p["content"] for p in char_pages)
-        parts.append(f"<characters>\n{body}\n</characters>")
-
-    if outline_pages:
-        body = "\n\n".join(p["content"] for p in outline_pages)
-        parts.append(f"<outline>\n{body}\n</outline>")
+    grouped: dict[str, list[str]] = {}
+    for p in core_pages:
+        tag = _TAG_BY_TYPE.get(p["type"])
+        if not tag or not (p.get("content") or "").strip():
+            continue
+        grouped.setdefault(tag, []).append(p["content"])
+    for tag in ("story_core", "world_setting", "characters", "outline", "outline_reverse", "foreshadow"):
+        body = grouped.get(tag)
+        if body:
+            parts.append(f"<{tag}>\n" + "\n\n".join(body) + f"\n</{tag}>")
 
     if chronicle_text:
         parts.append(f"<chronicle>\n{chronicle_text}\n</chronicle>")

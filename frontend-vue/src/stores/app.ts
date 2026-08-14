@@ -32,6 +32,7 @@ import type {
 
 let _navToken = 0
 let _convToken = 0
+let _kgToken = 0
 let _loadingPoint: string | null = null
 
 const ASSISTANT_KEY_PREFIX = 'fa_assistant_'
@@ -102,14 +103,44 @@ export const useAppStore = defineStore('app', () => {
   const lintLoading = ref<boolean>(false)
 
   const error = ref<string | null>(null)
+  const success = ref<string | null>(null)
+  const messagesLoading = ref<boolean>(false)
+
+  let _successTimer: ReturnType<typeof setTimeout> | null = null
+  /** 操作成功反馈（3s 自动消失），由 ToastHost 展示 */
+  function notifySuccess(msg: string) {
+    success.value = msg
+    if (_successTimer) clearTimeout(_successTimer)
+    _successTimer = setTimeout(() => { success.value = null }, 3000)
+  }
 
   const _currentAbort = ref<StreamAbort | null>(null)
 
-  function _abortCurrentStream() {
-    if (_currentAbort.value) {
-      _currentAbort.value()
-      _currentAbort.value = null
+  function _finalizeStream(keepPartial: boolean) {
+    const abort = _currentAbort.value
+    _currentAbort.value = null
+    if (abort) abort()
+    if (keepPartial && streamingContent.value.trim()) {
+      messages.value = [...messages.value, {
+        role: 'assistant',
+        content: streamingContent.value + '\n\n[已手动停止]',
+        thinking: streamingThinking.value || undefined,
+      }]
     }
+    streamingContent.value = ''
+    streamingThinking.value = ''
+    consultFlow.value = null
+    isStreaming.value = false
+  }
+
+  /** 离开对话/页面时中断流式请求（丢弃部分输出）。 */
+  function _abortCurrentStream() {
+    if (_currentAbort.value || isStreaming.value) _finalizeStream(false)
+  }
+
+  /** 用户主动停止生成：保留已生成的部分内容。 */
+  function stopStreaming() {
+    _finalizeStream(true)
   }
 
   async function deleteProject(projectId: ID) {
@@ -157,12 +188,24 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function renameProject(projectId: ID, name: string) {
+    try {
+      const updated = await api.updateProject(projectId, { name })
+      projects.value = projects.value.map(p => p.id === updated.id ? updated : p)
+      error.value = null
+      notifySuccess('已重命名')
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
   async function updateProjectRules(rulesText: string) {
     if (!currentProjectId.value) return
     try {
       const updated = await api.updateProject(currentProjectId.value, { rules_text: rulesText })
       projects.value = projects.value.map(p => p.id === updated.id ? updated : p)
       error.value = null
+      notifySuccess('创作守则已保存')
     } catch (e) {
       error.value = (e as Error).message
     }
@@ -202,6 +245,7 @@ export const useAppStore = defineStore('app', () => {
     consultFlow.value = null
     streamingContent.value = ''
     streamingThinking.value = ''
+    messagesLoading.value = true
     try {
       const msgs = await api.getMessages(conversationId)
       if (token !== _convToken) return
@@ -210,6 +254,8 @@ export const useAppStore = defineStore('app', () => {
     } catch (e) {
       if (token !== _convToken) return
       error.value = (e as Error).message
+    } finally {
+      if (token === _convToken) messagesLoading.value = false
     }
   }
 
@@ -260,6 +306,24 @@ export const useAppStore = defineStore('app', () => {
     streamingContent.value = ''
     streamingThinking.value = ''
 
+    // 流式节流：chunk 高频到达时按固定间隔刷新响应式状态，避免每 chunk 全量重渲染
+    const FLUSH_INTERVAL = 80
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
+    let latestThinking = ''
+    let latestContent = ''
+    const flush = () => {
+      flushTimer = null
+      streamingThinking.value = latestThinking
+      streamingContent.value = latestContent
+    }
+    const scheduleFlush = () => {
+      if (flushTimer == null) flushTimer = setTimeout(flush, FLUSH_INTERVAL)
+    }
+    const flushNow = () => {
+      if (flushTimer != null) { clearTimeout(flushTimer); flushTimer = null }
+      flush()
+    }
+
     const abort = api.streamChat(
       conversationId,
       content,
@@ -267,15 +331,17 @@ export const useAppStore = defineStore('app', () => {
         if (currentConversationId.value !== targetConvId) return
         if (type === 'thinking') {
           thinkingContent += chunk
-          streamingThinking.value = thinkingContent
+          latestThinking = thinkingContent
         } else {
           fullContent += chunk
-          streamingContent.value = fullContent
-          streamingThinking.value = thinkingContent
+          latestContent = fullContent
+          latestThinking = thinkingContent
         }
+        scheduleFlush()
       },
       () => {
         _currentAbort.value = null
+        flushNow()
         if (currentConversationId.value !== targetConvId) {
           isStreaming.value = false
           streamingContent.value = ''
@@ -286,6 +352,16 @@ export const useAppStore = defineStore('app', () => {
         streamingContent.value = ''
         streamingThinking.value = ''
         isStreaming.value = false
+        // 静默刷新：拿回服务端消息 id / created_at（时间戳、字数、稳定 key 都依赖它），
+        // 同时保留本地思考链（服务端不存 thinking）
+        void (async () => {
+          try {
+            const msgs = await api.getMessages(targetConvId)
+            if (currentConversationId.value !== targetConvId) return
+            const localThinking = messages.value.map(m => m.thinking)
+            messages.value = msgs.map((m, i) => (localThinking[i] ? { ...m, thinking: localThinking[i] } : m))
+          } catch { /* 刷新失败保持乐观消息即可 */ }
+        })()
       },
       (err: StreamError, partialContent: string) => {
         _currentAbort.value = null
@@ -298,6 +374,7 @@ export const useAppStore = defineStore('app', () => {
           return
         }
         console.error('[sendMessage] stream error:', err)
+        flushNow()
         const finalContent = partialContent || fullContent
         const newMessages: Message[] = finalContent
           ? [...baseMessages, { role: 'assistant', content: finalContent + '\n\n[生成中断]', thinking: thinkingContent || undefined }]
@@ -365,6 +442,11 @@ export const useAppStore = defineStore('app', () => {
       await fetchWorkspaceItems(projectId)
       if (status === 'finalized') {
         await fetchChronicle(projectId)
+        notifySuccess('已定稿')
+      } else if (status === 'locked') {
+        notifySuccess('已锁定')
+      } else {
+        notifySuccess('已解锁为草稿')
       }
     } catch (e) {
       error.value = (e as Error).message
@@ -387,6 +469,7 @@ export const useAppStore = defineStore('app', () => {
         await fetchWorkspaceItems(currentProjectId.value)
       }
       error.value = null
+      notifySuccess('已保存')
     } catch (e) {
       error.value = (e as Error).message
     }
@@ -402,14 +485,18 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function fetchKgGraph(projectId: ID, chapter?: number, layers?: KgKnowledgeLayer[]) {
+    const token = ++_kgToken
     kgLoading.value = true
     try {
-      kgGraph.value = await api.getKgGraph(projectId, chapter, layers)
+      const graph = await api.getKgGraph(projectId, chapter, layers)
+      if (token !== _kgToken) return  // 过期响应（用户已继续滑动）直接丢弃
+      kgGraph.value = graph
       error.value = null
     } catch (e) {
+      if (token !== _kgToken) return
       error.value = (e as Error).message
     } finally {
-      kgLoading.value = false
+      if (token === _kgToken) kgLoading.value = false
     }
   }
 
@@ -549,6 +636,10 @@ export const useAppStore = defineStore('app', () => {
       const result = await api.extractKg(projectId, opts)
       await fetchKgGraph(projectId)
       error.value = null
+      if (result?.stats) {
+        const s = result.stats
+        notifySuccess(`提取完成：新增 ${s.entities_new || 0} 实体 / ${s.relations_new || 0} 关系`)
+      }
       return result
     } catch (e) {
       error.value = (e as Error).message
@@ -597,6 +688,7 @@ export const useAppStore = defineStore('app', () => {
     consultFlow.value = null
     streamingContent.value = ''
     streamingThinking.value = ''
+    messagesLoading.value = true
     try {
       const r = await api.ensurePointConversation(projectId, point)
       if (token !== _convToken) { _loadingPoint = null; return }
@@ -607,7 +699,10 @@ export const useAppStore = defineStore('app', () => {
       if (token !== _convToken) { _loadingPoint = null; return }
       error.value = (e as Error).message
     } finally {
-      _loadingPoint = null
+      if (token === _convToken) {
+        _loadingPoint = null
+        messagesLoading.value = false
+      }
     }
   }
 
@@ -616,10 +711,14 @@ export const useAppStore = defineStore('app', () => {
     isArchiving.value = true
     try {
       const r = await api.summarizePoint(projectId, point, currentConversationId.value)
-      await fetchPoints(projectId)
-      await fetchWorkspaceItems(projectId)
+      await Promise.allSettled([
+        fetchPoints(projectId),
+        fetchWorkspaceItems(projectId),
+        fetchProjects(),  // 故事核可能触发 AI 自动命名，刷新项目名
+      ])
       isArchiving.value = false
       error.value = null
+      notifySuccess('点位已总结并存档')
       return r
     } catch (e) {
       isArchiving.value = false
@@ -649,8 +748,11 @@ export const useAppStore = defineStore('app', () => {
       messages.value = [...baseMessages, userMsg, { role: 'assistant', content: r.content + fieldsText }]
       streamingContent.value = ''
       isStreaming.value = false
-      await fetchPoints(projectId)
-      await fetchWorkspaceItems(projectId)
+      await Promise.allSettled([
+        fetchPoints(projectId),
+        fetchWorkspaceItems(projectId),
+        fetchProjects(),  // 快速生成可能产出书名并触发自动命名
+      ])
       if (currentConversationId.value === targetConvId) {
         await fetchMessages(targetConvId as ID)
       }
@@ -862,16 +964,14 @@ export const useAppStore = defineStore('app', () => {
   async function fetchAssistants() {
     try {
       const list = await api.listAssistants()
+      // 默认不选择助理（跟随点位角色/默认助手）；仅保留用户主动选择过的
       let chosenId: ID | '' = currentAssistantId.value
       if (!chosenId && currentProjectId.value) {
         chosenId = _getSavedAssistant(currentProjectId.value)
       }
-      if (!chosenId && list.length > 0) {
-        chosenId = list[0].id
-      }
       const valid = chosenId && list.some(a => a.id === chosenId)
       assistants.value = list
-      currentAssistantId.value = valid ? chosenId : (list[0]?.id || '')
+      currentAssistantId.value = valid ? chosenId : ''
     } catch (e) {
       error.value = (e as Error).message
     }
@@ -958,11 +1058,14 @@ export const useAppStore = defineStore('app', () => {
     lintResult,
     lintLoading,
     error,
-    _currentAbort,
+    success,
+    messagesLoading,
+    notifySuccess,
 
     deleteProject,
     fetchProjects,
     createProject,
+    renameProject,
     updateProjectRules,
     fetchConversations,
     createConversation,
@@ -972,6 +1075,7 @@ export const useAppStore = defineStore('app', () => {
     fetchMessages,
     sendMessage,
     regenerateMessage,
+    stopStreaming,
     fetchWorkspaceItems,
     createWorkspaceItem,
     updateItemStatus,

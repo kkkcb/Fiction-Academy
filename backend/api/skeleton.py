@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.database import get_db, fetch_all, fetch_one
+from backend.services.repo import parse_meta, maybe_apply_book_name
 from backend.agents.guide import (
     guide_step,
     detect_skeleton_completeness,
@@ -60,12 +61,7 @@ async def _load_skeleton_points(db, project_id: str) -> dict:
     )
     points = {}
     for r in rows:
-        meta = {}
-        if r.get("metadata"):
-            try:
-                meta = json.loads(r["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                meta = {}
+        meta = parse_meta(r.get("metadata"))
         points[r["item_type"]] = {
             "title": r.get("title") or "",
             "content": r.get("content") or "",
@@ -77,7 +73,7 @@ async def _load_skeleton_points(db, project_id: str) -> dict:
 async def _load_guide_history(db, conversation_id: str, limit: int = 8) -> list[dict]:
     rows = await fetch_all(
         db,
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?",
+        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
         (conversation_id, limit),
     )
     rows.reverse()
@@ -106,13 +102,13 @@ async def _upsert_skeleton_item(db, project_id: str, point: str, extracted_field
         "SELECT id, metadata, content, title FROM workspace_items WHERE project_id = ? AND item_type = ?",
         (project_id, point),
     )
+    # 引导过程产出书名（story_core.book_name）时，未命名项目自动改名
+    if point == "story_core":
+        new_name = await maybe_apply_book_name(db, project_id, extracted_fields)
+        if new_name:
+            logger.info("[skeleton] project=%s auto-named to %r", project_id, new_name)
     if row:
-        existing_meta = {}
-        if row.get("metadata"):
-            try:
-                existing_meta = json.loads(row["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        existing_meta = parse_meta(row.get("metadata"))
         existing_meta.update(extracted_fields)
         await db.execute(
             "UPDATE workspace_items SET metadata = ?, updated_at = datetime('now') WHERE id = ?",

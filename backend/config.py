@@ -17,12 +17,16 @@ if _env_file.exists():
 DATABASE_PATH = os.getenv("FA_DATABASE_PATH", str(_BASE_DIR / "data" / "fiction_academy.db"))
 CHARACTERS_DIR = os.getenv("FA_CHARACTERS_DIR", str(_BASE_DIR / "characters"))
 STATIC_DIR = _BASE_DIR / "frontend"
+VUE_DIST_DIR = _BASE_DIR / "frontend-vue" / "dist"
 
+# LLM 配置（XIAOMI_* 为历史遗留别名，优先读 LLM_*）
 LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("XIAOMI_API_KEY", "")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL") or os.getenv("XIAOMI_BASE_URL", "") or "https://open.bigmodel.cn/api/coding/paas/v4"
+LLM_BASE_URL = (
+    os.getenv("LLM_BASE_URL")
+    or os.getenv("XIAOMI_BASE_URL", "")
+    or "https://open.bigmodel.cn/api/coding/paas/v4"
+)
 DEFAULT_MODEL = os.getenv("FA_DEFAULT_MODEL", "glm-5.2")
-XIAOMI_API_KEY = LLM_API_KEY
-XIAOMI_BASE_URL = LLM_BASE_URL
 
 SYSTEM_PROMPT = """你是一位专业的小说创作助手。你的任务是协助用户进行小说创作，包括：
 - 构建世界观、角色设定、大纲规划
@@ -40,7 +44,11 @@ LLM_MAX_RETRIES = int(os.getenv("FA_LLM_MAX_RETRIES", "3"))
 LLM_MAX_TOKENS = int(os.getenv("FA_LLM_MAX_TOKENS", "8192"))
 CHAT_HISTORY_LIMIT = int(os.getenv("FA_CHAT_HISTORY_LIMIT", "40"))
 
-CORS_ORIGINS = [o.strip() for o in os.getenv("FA_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",") if o.strip()]
+CORS_ORIGINS = [o.strip() for o in os.getenv(
+    "FA_CORS_ORIGINS",
+    "http://localhost:8000,http://127.0.0.1:8000,"
+    "http://localhost:5173,http://127.0.0.1:5173",
+).split(",") if o.strip()]
 
 if not LLM_API_KEY:
     logger.warning("LLM_API_KEY 未配置！聊天功能将无法使用。请设置环境变量 LLM_API_KEY。")

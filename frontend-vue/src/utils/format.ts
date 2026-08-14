@@ -1,4 +1,5 @@
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { ConsultRecord, PointKey } from '../types'
 
 marked.setOptions({ breaks: false, gfm: true })
@@ -48,6 +49,15 @@ export const EXPERT_COLORS: Record<string, string> = {
   '主线策划': '#c55d3b', '世界观架构师': '#7c3aed', '人物塑造师': '#0891b2', '逆向架构师': '#059669', '节奏导演': '#db2777',
 }
 
+/** 点位主导角色名：该点位的 AI 以此身份对话（与后端 POINT_PERSONAS 对应） */
+export const POINT_PERSONA_NAMES: Record<string, string> = {
+  world_setting: '铸世者-炳',
+}
+
+export function pointPersonaName(point: string | null | undefined): string {
+  return point ? POINT_PERSONA_NAMES[point] || '' : ''
+}
+
 export function expertColor(name: string): string {
   return EXPERT_COLORS[name] || '#78716c'
 }
@@ -64,11 +74,35 @@ export function formatContent(text: string | null | undefined): string {
 export function formatTime(ts: string | null | undefined): string {
   if (!ts) return ''
   try {
-    const d = new Date(ts)
+    const d = new Date(normalizeTs(ts))
     return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   } catch {
     return ts
   }
+}
+
+/** SQLite datetime('now') 产出 "YYYY-MM-DD HH:MM:SS"（UTC 无时区标记），补 Z 后再解析 */
+function normalizeTs(ts: string): string {
+  const s = ts.replace(' ', 'T')
+  return /[Zz]|[+-]\d{2}:?\d{2}$/.test(s) ? s : s + 'Z'
+}
+
+export function relativeTime(ts: string | null | undefined): string {
+  if (!ts) return ''
+  const t = new Date(normalizeTs(ts)).getTime()
+  if (Number.isNaN(t)) return ''
+  const diff = Date.now() - t
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+  return formatTime(ts).split(' ')[0]
+}
+
+/** 网文场景的字数格式：1234 → "1,234 字" */
+export function charCount(text: string | null | undefined): string {
+  const n = (text || '').length
+  return n.toLocaleString('zh-CN') + ' 字'
 }
 
 export interface ParsedCommand {
@@ -123,13 +157,16 @@ function _fallbackMd(text: string): string {
   return h
 }
 
-export function formatMd(text: string | null | undefined): string {
+export function formatMd(text: string | null | undefined, opts: { cache?: boolean } = {}): string {
   if (!text) return ''
-  if (_mdCache.has(text)) return _mdCache.get(text) as string
+  const useCache = opts.cache !== false
+  if (useCache && _mdCache.has(text)) return _mdCache.get(text) as string
   const normalized = _normalizeMd(text)
   let h: string
   try { h = marked.parse(normalized) as string } catch { h = _fallbackMd(text) }
-  if (text.length < 8000) {
+  // AI 输出与用户输入都不可信，渲染前统一消毒（防存储型 XSS）
+  h = DOMPurify.sanitize(h, { USE_PROFILES: { html: true } })
+  if (useCache && text.length < 8000) {
     if (_mdCache.size >= _MD_CACHE_MAX) {
       const firstKey = _mdCache.keys().next().value as string
       _mdCache.delete(firstKey)

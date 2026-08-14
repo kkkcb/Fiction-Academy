@@ -43,3 +43,5 @@ _dump_history.py
 dist/
 build/
 .next/
+# Secrets & runtime
+.verify_pid.txt

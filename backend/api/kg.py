@@ -3,7 +3,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from backend.database import get_db, fetch_all, fetch_one
-from backend.agents.base import chat_json
+from backend.agents.base import chat_json, LLMError
 from backend.services import kg as kg_service
 
 router = APIRouter(prefix="/api", tags=["knowledge-graph"])
@@ -161,13 +161,14 @@ async def extract_from_text(project_id: str, body: ExtractRequest):
         names = [f"{e['name']}({e['entity_type']})" for e in existing[:30]]
         existing_hint = f"\n\n## 图谱中已存在的实体（提取时注意消歧，名称匹配则视为更新）\n{', '.join(names)}"
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": text + existing_hint}],
-        system_prompt=EXTRACT_SYSTEM_PROMPT,
-        temperature=0.2,
-    )
-    if "error" in result:
-        raise HTTPException(status_code=502, detail="AI 提取失败，请重试")
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": text + existing_hint}],
+            system_prompt=EXTRACT_SYSTEM_PROMPT,
+            temperature=0.2,
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"AI 提取失败，请重试（{str(e)[:100]}）")
 
     stats = await kg_service.merge_extraction(project_id, result, source="ai")
     return {"extraction": result, "stats": stats}
@@ -184,13 +185,14 @@ async def extract_from_item(project_id: str, item_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="工作台条目不存在")
     text = f"【{row['title'] or row['item_type']}】\n{row['content']}"
-    result = await chat_json(
-        messages=[{"role": "user", "content": text}],
-        system_prompt=EXTRACT_SYSTEM_PROMPT,
-        temperature=0.2,
-    )
-    if "error" in result:
-        raise HTTPException(status_code=502, detail="AI 提取失败，请重试")
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": text}],
+            system_prompt=EXTRACT_SYSTEM_PROMPT,
+            temperature=0.2,
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"AI 提取失败，请重试（{str(e)[:100]}）")
     stats = await kg_service.merge_extraction(project_id, result, source="workspace")
     return {"extraction": result, "stats": stats}
 

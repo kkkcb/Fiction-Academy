@@ -11,6 +11,7 @@ from backend.database import get_db, fetch_all, fetch_one
 from backend.agents.chapter_plan import generate_chapter_plan, format_chapter_plan_markdown
 from backend.agents.guide import POINT_LABELS
 from backend.agents.reviewer import review_chapter, should_retry, build_revision_feedback
+from backend.services.repo import parse_meta
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -29,12 +30,7 @@ def _format_skeleton_for_plan(rows: list[dict]) -> str:
     for r in rows:
         label = POINT_LABELS.get(r["item_type"], r["item_type"])
         content = r.get("content", "") or ""
-        meta = {}
-        if r.get("metadata"):
-            try:
-                meta = json.loads(r["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        meta = parse_meta(r.get("metadata"))
 
         if r["item_type"] == "story_core":
             one_liner = meta.get("one_liner", "")
@@ -94,12 +90,7 @@ async def _load_pending_foreshadows(db, project_id: str, chapter_number: int) ->
     )
     pending = []
     for r in rows:
-        meta = {}
-        if r.get("metadata"):
-            try:
-                meta = json.loads(r["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        meta = parse_meta(r.get("metadata"))
         status = meta.get("status", "open")
         payoff = meta.get("payoff_chapter")
         if status == "open" and payoff is not None and int(payoff) <= chapter_number:
@@ -176,13 +167,9 @@ async def create_chapter_plan(project_id: str, body: ChapterPlanRequest):
 
     content, metadata = format_chapter_plan_markdown(plan, chapter_number)
 
+    from backend.services import repo
     item_id = str(uuid.uuid4())
-    sort_row = await fetch_one(
-        db,
-        "SELECT MAX(sort_order) as mx FROM workspace_items WHERE project_id = ?",
-        (project_id,),
-    )
-    sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
+    sort_order = await repo.next_sort_order(db, project_id)
 
     await db.execute(
         """INSERT INTO workspace_items
@@ -218,12 +205,7 @@ async def get_chapter_plan(project_id: str, chapter_number: int):
     )
     if not row:
         raise HTTPException(status_code=404, detail="章纲不存在")
-    meta = {}
-    if row.get("metadata"):
-        try:
-            meta = json.loads(row["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    meta = parse_meta(row.get("metadata"))
     return {
         "id": row["id"],
         "chapter_number": chapter_number,
@@ -260,62 +242,28 @@ class ReviewRequest(BaseModel):
 
 
 async def _load_constraints_for_review(db, project_id: str, chapter_number: int) -> tuple:
-    """加载审校所需的全部约束。"""
+    """加载审校所需的全部约束（统一走 repo，metadata 与设定正文节选一起给）。"""
+    from backend.services import repo
+
     plan_row = await fetch_one(
         db,
         """SELECT content, metadata FROM workspace_items
            WHERE project_id = ? AND item_type = 'chapter_plan' AND chapter_number = ?""",
         (project_id, chapter_number),
     )
-    plan_meta = {}
-    if plan_row and plan_row.get("metadata"):
-        try:
-            plan_meta = json.loads(plan_row["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    plan_meta = repo.parse_meta(plan_row.get("metadata")) if plan_row else {}
 
-    char_row = await fetch_one(
-        db,
-        """SELECT metadata FROM workspace_items
-           WHERE project_id = ? AND item_type = 'character_setting'
-                 AND status IN ('finalized', 'locked')
-           ORDER BY sort_order LIMIT 1""",
-        (project_id,),
-    )
-    char_meta = {}
-    if char_row and char_row.get("metadata"):
-        try:
-            char_meta = json.loads(char_row["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    async def _first_meta(item_type: str) -> dict:
+        rows = await repo.load_finalized_items(db, project_id, [item_type], limit=1)
+        if not rows:
+            return {}
+        meta = dict(rows[0]["metadata"])
+        meta["content_excerpt"] = (rows[0].get("content") or "")[:400]
+        return meta
 
-    world_row = await fetch_one(
-        db,
-        """SELECT metadata FROM workspace_items
-           WHERE project_id = ? AND item_type = 'world_setting'
-                 AND status IN ('finalized', 'locked')""",
-        (project_id,),
-    )
-    world_meta = {}
-    if world_row and world_row.get("metadata"):
-        try:
-            world_meta = json.loads(world_row["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    outline_rev_row = await fetch_one(
-        db,
-        """SELECT metadata FROM workspace_items
-           WHERE project_id = ? AND item_type = 'outline_reverse'
-                 AND status IN ('finalized', 'locked')""",
-        (project_id,),
-    )
-    outline_rev_meta = {}
-    if outline_rev_row and outline_rev_row.get("metadata"):
-        try:
-            outline_rev_meta = json.loads(outline_rev_row["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    char_meta = await _first_meta("character_setting")
+    world_meta = await _first_meta("world_setting")
+    outline_rev_meta = await _first_meta("outline_reverse")
 
     pending_foreshadows = await _load_pending_foreshadows(db, project_id, chapter_number)
 

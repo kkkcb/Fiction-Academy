@@ -3,16 +3,20 @@ import { ref, watch, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import { runtimeErrors } from '../utils/errorReport'
+import IconAlert from './icons/IconAlert.vue'
+import IconCheck from './icons/IconCheck.vue'
+import IconInfo from './icons/IconInfo.vue'
 
 interface ToastItem {
   id: number
   type: string
   message: string
   detail?: string
+  showDetail?: boolean
 }
 
 const store = useAppStore()
-const { error } = storeToRefs(store)
+const { error, success } = storeToRefs(store)
 
 const toasts = ref<ToastItem[]>([])
 let idCounter = 0
@@ -25,11 +29,19 @@ function push(type: string, message: string, detail?: string) {
   }, 6000)
 }
 
+function toggleDetail(t: ToastItem) {
+  t.showDetail = !t.showDetail
+}
+
 watch(error, (newError) => {
   if (newError) {
     push('error', newError)
     store.error = null
   }
+})
+
+watch(success, (msg) => {
+  if (msg) push('success', msg)
 })
 
 watch(runtimeErrors, (errs) => {
@@ -51,13 +63,14 @@ watch(runtimeErrors, (errs) => {
           class="toast"
           :class="'toast-' + t.type"
           role="alert"
-          @click="t.detail && console.log(t.detail)"
+          @click="t.detail && toggleDetail(t)"
         >
           <span class="toast-icon" v-if="t.type === 'error'"><IconAlert :size="16" /></span>
           <span class="toast-icon" v-else-if="t.type === 'success'"><IconCheck :size="16" /></span>
           <span class="toast-icon" v-else><IconInfo :size="16" /></span>
           <span class="toast-msg">{{ t.message }}</span>
-          <span v-if="t.detail" class="toast-hint">点击查看详情</span>
+          <span v-if="t.detail" class="toast-hint">{{ t.showDetail ? '收起详情' : '查看详情' }}</span>
+          <pre v-if="t.detail && t.showDetail" class="toast-detail">{{ t.detail }}</pre>
         </div>
       </Transition-group>
     </div>
@@ -105,6 +118,20 @@ watch(runtimeErrors, (errs) => {
 .toast-icon { flex-shrink: 0; }
 .toast-msg { flex: 1; }
 .toast-hint { font-size: 10px; color: rgba(0,0,0,0.4); flex-shrink: 0; }
+.toast-detail {
+  flex-basis: 100%;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(0,0,0,0.05);
+  border-radius: 4px;
+  max-height: 120px;
+  overflow: auto;
+}
+.toast { flex-wrap: wrap; }
 
 .toast-enter-from {
   opacity: 0;

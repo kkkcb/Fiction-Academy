@@ -37,6 +37,9 @@ const leftWidth = ref<number>(260)
 const rightWidth = ref<number>(400)
 const draggingSide = ref<'left' | 'right' | null>(null)
 
+// 小屏默认折叠右面板（专注写作）；用户可手动展开
+const showRightPanel = ref(true)
+
 const isDark = ref(false)
 
 function toggleTheme() {
@@ -92,6 +95,7 @@ function stopResize() {
 
 onMounted(() => {
   isDark.value = document.documentElement.dataset.theme === 'dark'
+  if (window.innerWidth < 1180) showRightPanel.value = false
   if (currentProjectId.value && points.value.length === 0) {
     store.navigateTo('workspace', { currentProjectId: currentProjectId.value })
   }
@@ -142,6 +146,18 @@ async function handleArchive() {
         <span v-else-if="isPointMode && currentPointData?.status === 'done'" class="badge-done">已存档</span>
         <button
           class="theme-toggle"
+          :class="{ active: !showRightPanel }"
+          @click="showRightPanel = !showRightPanel"
+          :title="showRightPanel ? '收起设定面板（专注模式）' : '展开设定面板'"
+          :aria-label="showRightPanel ? '收起设定面板' : '展开设定面板'"
+        >
+          <svg viewBox="0 0 16 16" fill="none" width="16" height="16" aria-hidden="true">
+            <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M10 3v10" stroke="currentColor" stroke-width="1.3"/>
+          </svg>
+        </button>
+        <button
+          class="theme-toggle"
           @click="toggleTheme"
           :title="isDark ? '切换到浅色' : '切换到深色'"
           :aria-label="isDark ? '切换到浅色' : '切换到深色'"
@@ -157,11 +173,12 @@ async function handleArchive() {
     </div>
 
     <div
+      v-if="showRightPanel"
       class="resize-handle"
       :class="{ active: draggingSide === 'right' }"
       @mousedown="startResize('right', $event)"
     ></div>
 
-    <OverviewPanel ref="rightRef" :style="{ width: rightWidth + 'px' }" />
+    <OverviewPanel v-if="showRightPanel" ref="rightRef" :style="{ width: rightWidth + 'px' }" />
   </div>
 </template>

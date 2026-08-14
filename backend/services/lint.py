@@ -2,7 +2,7 @@ import json
 import logging
 
 from backend.database import get_db, fetch_all
-from backend.agents.base import chat_json
+from backend.agents.base import chat_json, LLMError
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +65,12 @@ async def run_lint(project_id: str) -> dict:
     except Exception:
         kg_content = "（知识图谱不可用）"
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": "请检查这个项目的设定一致性。"}],
-        system_prompt=LINT_SYSTEM_PROMPT.format(workspace_content=workspace_content[:4000], kg_content=kg_content[:2000]),
-        temperature=0.3,
-    )
-
-    if "error" in result:
-        return {"issues": [], "summary": "检测失败，请重试", "consistency_score": 0, "error": result["error"]}
-
-    return result
+    try:
+        return await chat_json(
+            messages=[{"role": "user", "content": "请检查这个项目的设定一致性。"}],
+            system_prompt=LINT_SYSTEM_PROMPT.format(workspace_content=workspace_content[:4000], kg_content=kg_content[:2000]),
+            temperature=0.3,
+        )
+    except LLMError as e:
+        logger.warning("[lint] failed: %s", e)
+        return {"issues": [], "summary": "检测失败，请重试", "consistency_score": 0, "error": str(e)[:200]}

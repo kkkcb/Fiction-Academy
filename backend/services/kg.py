@@ -305,7 +305,8 @@ async def _resolve_id_by_name(db, project_id: str, etype: str, name: str) -> str
     return ent["id"] if ent else None
 
 
-async def build_kg_injection(project_id: str, scene: str = "", chapter: int | None = None) -> str:
+async def build_kg_injection(project_id: str, scene: str = "", chapter: int | None = None,
+                             max_tokens: int = 2000) -> str:
     db = await get_db()
     is_writing = scene in ("write_chapter", "edit_chapter")
     layers = ["truth", "revealed"] if is_writing else ["truth", "revealed", "foreshadow"]
@@ -318,14 +319,40 @@ async def build_kg_injection(project_id: str, scene: str = "", chapter: int | No
     for e in entities:
         by_type.setdefault(e["entity_type"], []).append(e)
 
+    # token 预算：按类型重要性裁剪，优先保留角色/势力；关系网络最后保留
+    type_priority = ("character", "faction", "location", "item", "event")
+
+    def _estimate(entity: dict) -> int:
+        text = entity["name"] + str(entity.get("properties") or "") + (entity.get("summary") or "")
+        return max(10, len(text) * 3 // 5)
+
+    used = 0
+    kept: dict[str, list[dict]] = {}
+    for etype in type_priority:
+        items = sorted(by_type.get(etype, []), key=lambda e: -float(e.get("confidence") or 0))
+        kept_list = []
+        for e in items:
+            cost = _estimate(e)
+            if used + cost > max_tokens:
+                break
+            used += cost
+            kept_list.append(e)
+        if kept_list:
+            kept[etype] = kept_list
+    kept_entity_names = {e["name"] for items in kept.values() for e in items}
+    kept_relations = [
+        r for r in relations
+        if r.get("subject_name") in kept_entity_names and r.get("object_name") in kept_entity_names
+    ][: max(10, (max_tokens - used) // 20)]
+
     lines: list[str] = []
     layer_note = "（仅注入已确立事实与已揭示信息，伏笔层未注入以防剧透）" if is_writing else "（全知视角：含伏笔层）"
     lines.append(f'<knowledge_graph priority="high">{layer_note}')
     lines.append("以下是本项目知识图谱中已结构化的设定，创作时必须保持一致：")
     lines.append("")
 
-    for etype in ("character", "faction", "location", "item", "event"):
-        items = by_type.get(etype, [])
+    for etype in type_priority:
+        items = kept.get(etype, [])
         if not items:
             continue
         label = ENTITY_TYPE_LABELS[etype]
@@ -346,9 +373,9 @@ async def build_kg_injection(project_id: str, scene: str = "", chapter: int | No
             lines.append(f"- {'，'.join(str(x) for x in parts)} {layer_tag}{ch_tag}")
         lines.append("")
 
-    if relations:
+    if kept_relations:
         lines.append("【关系网络】")
-        for r in relations:
+        for r in kept_relations:
             arrow = "↔" if r.get("direction") == "bidirectional" else "→"
             layer_tag = f"[{LAYER_LABELS.get(r.get('knowledge_layer', 'truth'), '')}]"
             lines.append(f"- {r.get('subject_name')} {arrow}{r['predicate']}{arrow} {r.get('object_name')} {layer_tag}")

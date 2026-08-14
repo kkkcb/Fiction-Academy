@@ -98,11 +98,15 @@ async def run_expert_panel(idea: str, background: str, point_intro: str, point_l
 
     故事核专家（主线策划）统率全局：开场定调 + 最终裁决。
     Yields: dict 事件，包含 phase/leader/expert/round/name/perspective/content 等字段。
+
+    客户端断开导致生成器被提前关闭时，finally 会取消所有仍在运行的
+    专家任务，避免孤儿 LLM 调用继续烧 token。
     """
     history = {}
-
-    # ===== Phase 0：统率者定调 =====
-    opening_prompt = f"""## 讨论主题
+    running_tasks: set[asyncio.Task] = set()
+    try:
+        # ===== Phase 0：统率者定调 =====
+        opening_prompt = f"""## 讨论主题
 作者正在确定【{point_label}】，提出了以下想法：
 
 {idea}
@@ -120,39 +124,38 @@ async def run_expert_panel(idea: str, background: str, point_intro: str, point_l
 
 控制在 150 字以内，开门见山。"""
 
-    leader_opening = ""
-    yield {"phase": "leader_start", "name": LEADER["name"], "perspective": LEADER["perspective"]}
-    try:
-        async for kind, chunk in chat_stream(
-            messages=[{"role": "user", "content": opening_prompt}],
-            system_prompt=LEADER["system_prompt"],
-            temperature=0.75,
-        ):
-            if kind == "reasoning":
-                yield {"phase": "leader_thinking_chunk", "chunk": chunk}
-            else:
-                leader_opening += chunk
-                yield {"phase": "leader_chunk", "chunk": chunk}
-    except Exception as e:
-        logger.warning("[expert_panel] leader opening failed: %s", e)
-        leader_opening = f"（统率者暂时离线：{e}）"
-        yield {"phase": "leader_chunk", "chunk": leader_opening}
-    history.setdefault(LEADER["key"], {})[1] = leader_opening
-    yield {
-        "phase": "leader_done",
-        "name": LEADER["name"],
-        "perspective": LEADER["perspective"],
-        "content": leader_opening,
-    }
+        leader_opening = ""
+        yield {"phase": "leader_start", "name": LEADER["name"], "perspective": LEADER["perspective"]}
+        try:
+            async for kind, chunk in chat_stream(
+                messages=[{"role": "user", "content": opening_prompt}],
+                system_prompt=LEADER["system_prompt"],
+                temperature=0.75,
+            ):
+                if kind == "reasoning":
+                    yield {"phase": "leader_thinking_chunk", "chunk": chunk}
+                else:
+                    leader_opening += chunk
+                    yield {"phase": "leader_chunk", "chunk": chunk}
+        except Exception as e:
+            logger.warning("[expert_panel] leader opening failed: %s", e)
+            leader_opening = f"（统率者暂时离线：{e}）"
+            yield {"phase": "leader_chunk", "chunk": leader_opening}
+        history.setdefault(LEADER["key"], {})[1] = leader_opening
+        yield {
+            "phase": "leader_done",
+            "name": LEADER["name"],
+            "perspective": LEADER["perspective"],
+            "content": leader_opening,
+        }
 
-    others = [e for e in EXPERTS if not e.get("is_leader")]
+        others = [e for e in EXPERTS if not e.get("is_leader")]
 
-    # ===== Round 1：各专家响应统率者定调 =====
-    yield {"phase": "round_start", "round": 1}
-    queue = asyncio.Queue()
-    r1_tasks = []
-    for e in others:
-        prompt = f"""## 讨论主题
+        # ===== Round 1：各专家响应统率者定调 =====
+        yield {"phase": "round_start", "round": 1}
+        queue = asyncio.Queue()
+        for e in others:
+            prompt = f"""## 讨论主题
 作者正在确定【{point_label}】，想法：
 
 {idea}
@@ -171,27 +174,28 @@ async def run_expert_panel(idea: str, background: str, point_intro: str, point_l
 - 点出隐患和风险
 - 给出你的专业建议
 控制在 200 字以内，直击要害。"""
-        r1_tasks.append(asyncio.create_task(_stream_expert(e, prompt, 1, queue)))
+            t = asyncio.create_task(_stream_expert(e, prompt, 1, queue))
+            running_tasks.add(t)
+            t.add_done_callback(running_tasks.discard)
 
-    r1_done = 0
-    r1_total = len(r1_tasks)
-    while r1_done < r1_total:
-        event = await queue.get()
-        if event["phase"] == "expert_done":
-            history.setdefault(event["expert"], {})[1] = event["content"]
-            r1_done += 1
-        yield event
+        r1_done = 0
+        r1_total = len(others)
+        while r1_done < r1_total:
+            event = await queue.get()
+            if event["phase"] == "expert_done":
+                history.setdefault(event["expert"], {})[1] = event["content"]
+                r1_done += 1
+            yield event
 
-    # ===== Round 2：全员交锋（含统率者本人）=====
-    yield {"phase": "round_start", "round": 2}
-    r1_summary = "\n\n".join(
-        f"【{e['name']}】{history.get(e['key'], {}).get(1, '')}" for e in EXPERTS
-    )
-    queue2 = asyncio.Queue()
-    r2_tasks = []
-    for e in EXPERTS:
-        my_prev = history.get(e["key"], {}).get(1, "")
-        prompt = f"""## 你的第一轮发言
+        # ===== Round 2：全员交锋（含统率者本人）=====
+        yield {"phase": "round_start", "round": 2}
+        r1_summary = "\n\n".join(
+            f"【{e['name']}】{history.get(e['key'], {}).get(1, '')}" for e in EXPERTS
+        )
+        queue2 = asyncio.Queue()
+        for e in EXPERTS:
+            my_prev = history.get(e["key"], {}).get(1, "")
+            prompt = f"""## 你的第一轮发言
 {my_prev}
 
 ## 第一轮所有发言
@@ -202,29 +206,31 @@ async def run_expert_panel(idea: str, background: str, point_intro: str, point_l
 - 有没有需要补充或修正的地方？
 - 你坚持什么，让步什么？
 控制在 200 字以内。"""
-        r2_tasks.append(asyncio.create_task(_stream_expert(e, prompt, 2, queue2)))
+            t = asyncio.create_task(_stream_expert(e, prompt, 2, queue2))
+            running_tasks.add(t)
+            t.add_done_callback(running_tasks.discard)
 
-    r2_done = 0
-    r2_total = len(r2_tasks)
-    while r2_done < r2_total:
-        event = await queue2.get()
-        if event["phase"] == "expert_done":
-            history.setdefault(event["expert"], {})[2] = event["content"]
-            r2_done += 1
-        yield event
+        r2_done = 0
+        r2_total = len(EXPERTS)
+        while r2_done < r2_total:
+            event = await queue2.get()
+            if event["phase"] == "expert_done":
+                history.setdefault(event["expert"], {})[2] = event["content"]
+                r2_done += 1
+            yield event
 
-    # ===== 最终裁决：统率者汇总 =====
-    all_speech_parts = []
-    for e in EXPERTS:
-        r1 = history.get(e["key"], {}).get(1, "")
-        r2 = history.get(e["key"], {}).get(2, "")
-        block = f"### {e['name']}（{e['perspective']}）\n第1轮：{r1}"
-        if r2:
-            block += f"\n第2轮：{r2}"
-        all_speech_parts.append(block)
-    all_speech = "\n\n".join(all_speech_parts)
+        # ===== 最终裁决：统率者汇总 =====
+        all_speech_parts = []
+        for e in EXPERTS:
+            r1 = history.get(e["key"], {}).get(1, "")
+            r2 = history.get(e["key"], {}).get(2, "")
+            block = f"### {e['name']}（{e['perspective']}）\n第1轮：{r1}"
+            if r2:
+                block += f"\n第2轮：{r2}"
+            all_speech_parts.append(block)
+        all_speech = "\n\n".join(all_speech_parts)
 
-    synthesis_prompt = f"""## 讨论主题
+        synthesis_prompt = f"""## 讨论主题
 作者要确定【{point_label}】，核心想法：{idea}
 
 ## 已确定的背景
@@ -235,60 +241,67 @@ async def run_expert_panel(idea: str, background: str, point_intro: str, point_l
 
 作为统率者，请综合以上讨论，对【{point_label}】做出最终裁决，产出一套完整、自洽、可执行的设定方案。"""
 
-    yield {"phase": "summary_start"}
-    summary = ""
-    try:
-        async for kind, chunk in chat_stream(
-            messages=[{"role": "user", "content": synthesis_prompt}],
-            system_prompt=LEADER_SYNTHESIS_PROMPT,
-            temperature=0.6,
-        ):
-            if kind == "reasoning":
-                yield {"phase": "summary_thinking_chunk", "chunk": chunk}
-            else:
-                summary += chunk
-                yield {"phase": "summary_chunk", "chunk": chunk}
-    except Exception as e:
-        logger.warning("[expert_panel] summary failed: %s", e)
-        summary = f"（裁决生成失败：{e}）"
-        yield {"phase": "summary_chunk", "chunk": summary}
+        yield {"phase": "summary_start"}
+        summary = ""
+        try:
+            async for kind, chunk in chat_stream(
+                messages=[{"role": "user", "content": synthesis_prompt}],
+                system_prompt=LEADER_SYNTHESIS_PROMPT,
+                temperature=0.6,
+            ):
+                if kind == "reasoning":
+                    yield {"phase": "summary_thinking_chunk", "chunk": chunk}
+                else:
+                    summary += chunk
+                    yield {"phase": "summary_chunk", "chunk": chunk}
+        except Exception as e:
+            logger.warning("[expert_panel] summary failed: %s", e)
+            summary = f"（裁决生成失败：{e}）"
+            yield {"phase": "summary_chunk", "chunk": summary}
 
-    yield {"phase": "summary", "content": summary}
+        yield {"phase": "summary", "content": summary}
 
-    rounds_data = []
-    round_labels = {1: "响应定调", 2: "交锋"}
-    for round_num in range(1, rounds + 1):
-        entries = []
-        for e in EXPERTS:
-            content = history.get(e["key"], {}).get(round_num, "")
-            if content:
-                entries.append({
-                    "name": e["name"],
-                    "perspective": e["perspective"],
-                    "content": content,
-                    "is_leader": bool(e.get("is_leader")),
+        rounds_data = []
+        round_labels = {1: "响应定调", 2: "交锋"}
+        for round_num in range(1, rounds + 1):
+            entries = []
+            for e in EXPERTS:
+                content = history.get(e["key"], {}).get(round_num, "")
+                if content:
+                    entries.append({
+                        "name": e["name"],
+                        "perspective": e["perspective"],
+                        "content": content,
+                        "is_leader": bool(e.get("is_leader")),
+                    })
+            if entries:
+                rounds_data.append({
+                    "round": round_num,
+                    "label": round_labels.get(round_num, f"第{round_num}轮"),
+                    "entries": entries,
                 })
-        if entries:
-            rounds_data.append({
-                "round": round_num,
-                "label": round_labels.get(round_num, f"第{round_num}轮"),
-                "entries": entries,
-            })
 
-    record = {
-        "kind": "consult_record",
-        "leader": {
-            "name": LEADER["name"],
-            "perspective": LEADER["perspective"],
-            "content": leader_opening,
-        },
-        "rounds": rounds_data,
-        "summary": summary,
-    }
+        record = {
+            "kind": "consult_record",
+            "leader": {
+                "name": LEADER["name"],
+                "perspective": LEADER["perspective"],
+                "content": leader_opening,
+            },
+            "rounds": rounds_data,
+            "summary": summary,
+        }
 
-    yield {"phase": "record", "record": record}
+        yield {"phase": "record", "record": record}
 
-    yield {"phase": "done"}
+        yield {"phase": "done"}
+    finally:
+        # 生成器被提前关闭（客户端断开/异常）时，取消所有仍在跑的专家任务
+        for t in list(running_tasks):
+            if not t.done():
+                t.cancel()
+        if running_tasks:
+            logger.info("[expert_panel] cancelled %d orphan task(s)", len(running_tasks))
 
 
 async def _stream_solo(messages, system_prompt, temperature, event_meta, queue, start_phase, chunk_phase, thinking_phase, done_phase):

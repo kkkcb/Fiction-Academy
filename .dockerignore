@@ -1,0 +1,14 @@
+.git
+.env.local
+data/
+logs/
+node_modules/
+frontend/
+frontend-vue/node_modules/
+frontend-vue/src/
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/tests/
+/*.md
+!characters/**/*.md

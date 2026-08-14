@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.database import get_db, fetch_all, fetch_one
+from backend.agents.personas import WORLDFORGER_NAME, WORLDFORGER_PROMPT
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -25,6 +26,14 @@ BUILTIN_ASSISTANTS = [
 2. 角色随故事发展自然成长变化
 3. 每一章都要有看点和钩子
 4. 尊重用户的创作意图，提供专业建议但以用户为准""",
+        "model": "",
+        "is_builtin": 1,
+    },
+    {
+        "id": "builtin-world-forger",
+        "name": WORLDFORGER_NAME,
+        "description": "沉静的世界建筑师：世界自然生长，渐进式披露，先立核心法则",
+        "system_prompt": WORLDFORGER_PROMPT,
         "model": "",
         "is_builtin": 1,
     },

@@ -1,14 +1,19 @@
-import uuid
+"""Goal 模式：目标拆解与逐步执行。
+
+状态持久化在 goals / goal_steps 表中（重启不丢、支持多实例）。
+状态机：planning → executing → completed / cancelled
+"""
 import json
 import logging
+import uuid
 from datetime import datetime
 
-from backend.database import get_db, fetch_all, fetch_one
-from backend.agents.base import chat_json, chat_text
+from backend.database import get_db, fetch_all, fetch_one, transaction
+from backend.agents.base import chat_json, chat_text, LLMError
+from backend.services import repo
+from backend.services.context_builder import build_workspace_digest
 
 logger = logging.getLogger(__name__)
-
-_goals: dict[str, dict] = {}
 
 
 COMPLETENESS_SYSTEM_PROMPT = """你是一位资深小说创作顾问。请检查以下小说项目的完整性。
@@ -107,24 +112,6 @@ GOAL_TYPE_MAP = {
 }
 
 
-async def _gather_project_context(project_id: str) -> str:
-    db = await get_db()
-    rows = await fetch_all(
-        db,
-        "SELECT item_type, title, content, status FROM workspace_items WHERE project_id = ? ORDER BY sort_order, created_at",
-        (project_id,),
-    )
-    parts = []
-    for r in rows:
-        status_tag = f"[{r['status']}]" if r["status"] != "draft" else ""
-        title = r["title"] or r["item_type"]
-        content = (r["content"] or "")[:800]
-        parts.append(f"【{title}】{status_tag}\n{content}")
-    if not parts:
-        return "（项目尚无工作台条目）"
-    return "\n\n".join(parts)
-
-
 async def _gather_kg_summary(project_id: str) -> str:
     try:
         from backend.services.kg import list_entities, list_relations
@@ -153,18 +140,95 @@ def _classify_goal(description: str) -> str:
     return "custom"
 
 
+# ---------------------------------------------------------------------------
+# 持久化
+
+async def _save_goal(goal: dict):
+    db = await get_db()
+    async with transaction():
+        await db.execute(
+            """UPDATE goals SET status = ?, current_step = ?, analysis = ?, updated_at = datetime('now')
+               WHERE id = ?""",
+            (goal["status"], goal["current_step"],
+             json.dumps(goal.get("analysis") or {}, ensure_ascii=False), goal["goal_id"]),
+        )
+        for step in goal["steps"]:
+            await db.execute(
+                """UPDATE goal_steps SET title = ?, dimension = ?, description = ?, step_type = ?,
+                       questions = ?, status = ?, result = ?, saved_item_id = ?,
+                       updated_at = datetime('now')
+                   WHERE goal_id = ? AND step_index = ?""",
+                (step["title"], step["dimension"], step["description"], step["step_type"],
+                 json.dumps(step.get("questions") or [], ensure_ascii=False),
+                 step["status"], step["result"], step.get("saved_item_id"),
+                 goal["goal_id"], step["index"]),
+            )
+
+
+async def load_goal(goal_id: str) -> dict | None:
+    db = await get_db()
+    row = await fetch_one(db, "SELECT * FROM goals WHERE id = ?", (goal_id,))
+    if not row:
+        return None
+    steps_rows = await fetch_all(
+        db,
+        "SELECT * FROM goal_steps WHERE goal_id = ? ORDER BY step_index ASC",
+        (goal_id,),
+    )
+    try:
+        analysis = json.loads(row.get("analysis") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        analysis = {}
+    steps = []
+    for s in steps_rows:
+        try:
+            questions = json.loads(s.get("questions") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            questions = []
+        steps.append({
+            "index": s["step_index"],
+            "title": s["title"],
+            "dimension": s["dimension"],
+            "description": s["description"],
+            "step_type": s["step_type"],
+            "questions": questions,
+            "status": s["status"],
+            "result": s["result"],
+            "saved_item_id": s.get("saved_item_id"),
+        })
+    return {
+        "goal_id": row["id"],
+        "project_id": row["project_id"],
+        "description": row["description"],
+        "goal_type": row["goal_type"],
+        "status": row["status"],
+        "analysis": analysis,
+        "rules": row.get("rules") or "",
+        "kg_summary": row.get("kg_summary") or "",
+        "steps": steps,
+        "current_step": row["current_step"],
+        "created_at": row.get("created_at") or "",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 状态机操作（api/goal.py 的入口）
+
 async def start_goal(project_id: str, description: str) -> dict:
-    context = await _gather_project_context(project_id)
+    db = await get_db()
+    context = await build_workspace_digest(project_id, per_item_limit=800)
     rules = await _gather_rules(project_id)
     kg_summary = await _gather_kg_summary(project_id)
 
-    analysis = await chat_json(
-        messages=[{"role": "user", "content": f"请分析这个项目的完整性。目标方向：{description}"}],
-        system_prompt=COMPLETENESS_SYSTEM_PROMPT.format(project_context=context),
-        temperature=0.3,
-    )
-    if "error" in analysis:
-        analysis = {"dimensions": [], "completion_rate": 0, "priority_gaps": [], "error": analysis["error"]}
+    try:
+        analysis = await chat_json(
+            messages=[{"role": "user", "content": f"请分析这个项目的完整性。目标方向：{description}"}],
+            system_prompt=COMPLETENESS_SYSTEM_PROMPT.format(project_context=context),
+            temperature=0.3,
+        )
+    except LLMError as e:
+        logger.warning("[goal] completeness analysis failed, using empty: %s", e)
+        analysis = {"dimensions": [], "completion_rate": 0, "priority_gaps": []}
 
     completion_rate = analysis.get("completion_rate", 0)
     gaps = analysis.get("priority_gaps", [])
@@ -172,70 +236,86 @@ async def start_goal(project_id: str, description: str) -> dict:
         dim_names = [d["name"] for d in analysis.get("dimensions", []) if d.get("status") in ("missing", "partial")]
         gaps = dim_names[:5]
 
-    plan = await chat_json(
-        messages=[{"role": "user", "content": "请根据分析结果生成执行计划"}],
-        system_prompt=PLAN_SYSTEM_PROMPT.format(goal=description, rate=completion_rate, gaps=json.dumps(gaps, ensure_ascii=False)),
-        temperature=0.4,
-    )
-    if "error" in plan:
-        plan = {"steps": [{"title": description, "dimension": "自定义", "description": "直接执行用户目标", "step_type": "generate", "questions": []}]}
-
-    steps = []
-    for i, s in enumerate(plan.get("steps", [])):
-        steps.append({
-            "index": i,
-            "title": s.get("title", f"步骤 {i+1}"),
-            "dimension": s.get("dimension", ""),
-            "description": s.get("description", ""),
-            "step_type": s.get("step_type", "generate"),
-            "questions": s.get("questions", []),
-            "status": "pending",
-            "result": "",
-            "saved_item_id": None,
-        })
+    try:
+        plan = await chat_json(
+            messages=[{"role": "user", "content": "请根据分析结果生成执行计划"}],
+            system_prompt=PLAN_SYSTEM_PROMPT.format(
+                goal=description, rate=completion_rate,
+                gaps=json.dumps(gaps, ensure_ascii=False),
+            ),
+            temperature=0.4,
+        )
+    except LLMError as e:
+        logger.warning("[goal] plan generation failed, fallback to single step: %s", e)
+        plan = {"steps": [{"title": description, "dimension": "自定义",
+                           "description": "直接执行用户目标", "step_type": "generate", "questions": []}]}
 
     goal_id = str(uuid.uuid4())
-    goal = {
-        "goal_id": goal_id,
-        "project_id": project_id,
-        "description": description,
-        "goal_type": _classify_goal(description),
-        "status": "planning",
-        "analysis": analysis,
-        "rules": rules,
-        "kg_summary": kg_summary,
-        "steps": steps,
-        "current_step": 0,
-        "created_at": datetime.now().isoformat(),
-    }
-    _goals[goal_id] = goal
-    logger.info("[goal] started goal=%s project=%s steps=%d", goal_id, project_id, len(steps))
-    return goal
+    now = datetime.now().isoformat()
+    async with transaction():
+        await db.execute(
+            """INSERT INTO goals (id, project_id, description, goal_type, status, analysis,
+                                  rules, kg_summary, current_step, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'planning', ?, ?, ?, 0, ?, datetime('now'))""",
+            (goal_id, project_id, description, _classify_goal(description),
+             json.dumps(analysis, ensure_ascii=False), rules, kg_summary, now),
+        )
+        for i, s in enumerate(plan.get("steps", [])):
+            await db.execute(
+                """INSERT INTO goal_steps
+                   (id, goal_id, step_index, title, dimension, description, step_type,
+                    questions, status, result, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', datetime('now'))""",
+                (str(uuid.uuid4()), goal_id, i,
+                 s.get("title", f"步骤 {i+1}"), s.get("dimension", ""), s.get("description", ""),
+                 s.get("step_type", "generate"),
+                 json.dumps(s.get("questions") or [], ensure_ascii=False)),
+            )
+
+    logger.info("[goal] started goal=%s project=%s", goal_id, project_id)
+    return await load_goal(goal_id)
 
 
-def get_goal(goal_id: str) -> dict | None:
-    return _goals.get(goal_id)
+async def get_goal(goal_id: str) -> dict | None:
+    return await load_goal(goal_id)
 
 
-def confirm_plan(goal_id: str, steps: list[dict] | None = None) -> dict | None:
-    goal = _goals.get(goal_id)
+async def confirm_plan(goal_id: str, steps: list[dict] | None = None) -> dict | None:
+    db = await get_db()
+    goal = await load_goal(goal_id)
     if not goal:
         return None
-    if steps:
-        goal["steps"] = steps
-    goal["status"] = "executing"
-    goal["current_step"] = 0
-    return goal
+    async with transaction():
+        if steps:
+            # 用户编辑过计划：全量重建 steps
+            await db.execute("DELETE FROM goal_steps WHERE goal_id = ?", (goal_id,))
+            for i, s in enumerate(steps):
+                await db.execute(
+                    """INSERT INTO goal_steps
+                       (id, goal_id, step_index, title, dimension, description, step_type,
+                        questions, status, result, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (str(uuid.uuid4()), goal_id, i,
+                     s.get("title", f"步骤 {i+1}"), s.get("dimension", ""),
+                     s.get("description", ""), s.get("step_type", "generate"),
+                     json.dumps(s.get("questions") or [], ensure_ascii=False),
+                     s.get("status", "pending"), s.get("result", "")),
+                )
+        await db.execute(
+            "UPDATE goals SET status = 'executing', current_step = 0, updated_at = datetime('now') WHERE id = ?",
+            (goal_id,),
+        )
+    return await load_goal(goal_id)
 
 
 async def execute_step(goal_id: str, step_index: int, user_input: str = "") -> dict | None:
-    goal = _goals.get(goal_id)
+    goal = await load_goal(goal_id)
     if not goal or step_index >= len(goal["steps"]):
         return None
 
     step = goal["steps"][step_index]
     project_id = goal["project_id"]
-    context = await _gather_project_context(project_id)
+    context = await build_workspace_digest(project_id, per_item_limit=800)
 
     input_section = ""
     if user_input:
@@ -246,7 +326,7 @@ async def execute_step(goal_id: str, step_index: int, user_input: str = "") -> d
         system_prompt=EXECUTE_SYSTEM_PROMPT.format(
             project_context=context[:3000],
             rules=goal.get("rules", "") or "（无特殊守则）",
-            kg_summary=goal.get("kg_summary", "")[:1000] or "（无图谱数据）",
+            kg_summary=(goal.get("kg_summary", "") or "（无图谱数据）")[:1000],
             step_title=step["title"],
             step_description=step["description"],
             user_input_section=input_section,
@@ -261,17 +341,16 @@ async def execute_step(goal_id: str, step_index: int, user_input: str = "") -> d
     item_id = await _save_to_workspace(project_id, step)
     step["saved_item_id"] = item_id
 
-    all_done = all(s["status"] in ("completed", "skipped") for s in goal["steps"])
-    if all_done:
+    if all(s["status"] in ("completed", "skipped") for s in goal["steps"]):
         goal["status"] = "completed"
 
+    await _save_goal(goal)
     return goal
 
 
 async def _save_to_workspace(project_id: str, step: dict) -> str | None:
     try:
         db = await get_db()
-        item_id = str(uuid.uuid4())
         item_type = "world_setting"
         dim = step.get("dimension", "")
         if "角色" in dim or "主角" in dim or "反派" in dim:
@@ -279,44 +358,38 @@ async def _save_to_workspace(project_id: str, step: dict) -> str | None:
         elif "剧情" in dim or "大纲" in dim or "冲突" in dim or "事件" in dim:
             item_type = "outline"
 
-        max_order = await fetch_one(
-            db,
-            "SELECT MAX(sort_order) as m FROM workspace_items WHERE project_id = ?",
-            (project_id,),
+        return await repo.upsert_workspace_item(
+            db, project_id, item_type,
+            title=step["title"], content=step["result"] or "", status="draft",
         )
-        next_order = (max_order["m"] or 0) + 1 if max_order and max_order["m"] is not None else 1
-
-        await db.execute(
-            """INSERT INTO workspace_items (id, project_id, item_type, title, content, status, sort_order)
-               VALUES (?, ?, ?, ?, ?, 'draft', ?)""",
-            (item_id, project_id, item_type, step["title"], step["result"], next_order),
-        )
-        await db.commit()
-        logger.info("[goal] saved step '%s' to workspace item %s", step["title"], item_id)
-        return item_id
     except Exception as e:
         logger.warning("[goal] failed to save step to workspace: %s", e)
         return None
 
 
-def skip_step(goal_id: str, step_index: int) -> dict | None:
-    goal = _goals.get(goal_id)
+async def skip_step(goal_id: str, step_index: int) -> dict | None:
+    goal = await load_goal(goal_id)
     if not goal or step_index >= len(goal["steps"]):
         return None
     goal["steps"][step_index]["status"] = "skipped"
     goal["current_step"] = step_index + 1
-    all_done = all(s["status"] in ("completed", "skipped") for s in goal["steps"])
-    if all_done:
+    if all(s["status"] in ("completed", "skipped") for s in goal["steps"]):
         goal["status"] = "completed"
+    await _save_goal(goal)
     return goal
 
 
-def cancel_goal(goal_id: str) -> dict | None:
-    goal = _goals.get(goal_id)
+async def cancel_goal(goal_id: str) -> dict | None:
+    db = await get_db()
+    goal = await load_goal(goal_id)
     if not goal:
         return None
-    goal["status"] = "cancelled"
-    return goal
+    async with transaction():
+        await db.execute(
+            "UPDATE goals SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
+            (goal_id,),
+        )
+    return await load_goal(goal_id)
 
 
 def generate_summary(goal: dict) -> str:

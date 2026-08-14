@@ -3,7 +3,7 @@ import { ref, computed, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { ID, Conversation } from '../types'
 import { useAppStore } from '../stores/app'
-import { POINT_NAV } from '../utils/format'
+import { POINT_NAV, relativeTime } from '../utils/format'
 import IconCheck from './icons/IconCheck.vue'
 import IconTrash from './icons/IconTrash.vue'
 
@@ -79,10 +79,8 @@ async function handleNewConv() {
 }
 
 function goBack() {
-  console.log('[goBack] clicked, route before:', store.route)
   try {
     store.navigateTo('projects')
-    console.log('[goBack] navigateTo called, route after:', store.route)
   } catch (e) {
     console.error('[goBack] navigateTo error:', e)
   }
@@ -150,11 +148,18 @@ function onSelectAssistant(e: Event) {
           @blur="commitRename"
         />
         <template v-else>
-          <span class="conv-title" @click.stop="startRename(c)" title="点击重命名">{{ c.title }}</span>
+          <div class="conv-main">
+            <span class="conv-title" @click.stop="startRename(c)" title="点击重命名">{{ c.title }}</span>
+            <span v-if="c.updated_at" class="conv-time">{{ relativeTime(c.updated_at) }}</span>
+          </div>
           <button class="conv-delete" title="删除" :aria-label="`删除对话${c.title}`" @click.stop="handleDeleteConv(c.id)">
             <IconTrash :size="12" />
           </button>
         </template>
+      </div>
+
+      <div v-if="freeConversations.length === 0" class="conv-empty">
+        暂无自由对话<br />点击右上角 + 随时开聊
       </div>
 
       <template v-if="legacyPointConversations.length > 0">
@@ -176,6 +181,7 @@ function onSelectAssistant(e: Event) {
 
     <div v-if="assistants.length > 0" class="assistant-section">
       <select class="assistant-select" aria-label="选择助理" :value="currentAssistantId" @change="onSelectAssistant">
+        <option value="">默认 · 跟随点位</option>
         <option v-for="a in assistants" :key="a.id" :value="a.id">{{ a.name }}</option>
       </select>
     </div>
@@ -194,6 +200,27 @@ function onSelectAssistant(e: Event) {
   padding: 2px 6px;
   font-family: inherit;
   outline: none;
+}
+.conv-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.conv-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-empty {
+  padding: 10px 14px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  text-align: center;
 }
 .legacy-header {
   margin-top: 12px;

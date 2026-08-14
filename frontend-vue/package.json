@@ -11,12 +11,14 @@
     "typecheck:node": "vue-tsc --noEmit -p tsconfig.node.json --composite false"
   },
   "dependencies": {
+    "dompurify": "^3.4.13",
     "marked": "^12.0.0",
     "pinia": "^2.1.7",
     "vue": "^3.4.0"
   },
   "devDependencies": {
     "@tsconfig/node20": "^20.1.9",
+    "@types/node": "^26.2.0",
     "@vitejs/plugin-vue": "^5.0.0",
     "playwright": "^1.62.1",
     "typescript": "~5.6",

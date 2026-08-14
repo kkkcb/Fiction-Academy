@@ -27,6 +27,40 @@ import type {
 
 const BASE = '/api'
 
+// 流式请求的空闲超时：连续 STREAM_IDLE_TIMEOUT_MS 没有收到任何数据视为服务器挂起
+const STREAM_IDLE_TIMEOUT_MS = 120_000
+
+interface IdleWatchdog {
+  touch: () => void
+  cancel: () => void
+}
+
+function makeIdleWatchdog(onTimeout: () => void): IdleWatchdog {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedule = () => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(onTimeout, STREAM_IDLE_TIMEOUT_MS)
+  }
+  return {
+    touch: schedule,
+    cancel() {
+      if (timer) clearTimeout(timer)
+      timer = null
+    },
+  }
+}
+
+function parseHttpError(status: number, body: string): StreamError {
+  let detail = ''
+  try {
+    const obj = JSON.parse(body)
+    detail = obj?.detail || obj?.message || ''
+  } catch {}
+  const err = new Error(detail || `HTTP ${status}`) as StreamError
+  err.status = status
+  return err
+}
+
 async function request<T = unknown>(method: string, url: string, body?: unknown): Promise<T> {
   const options: RequestInit = {
     method,
@@ -116,8 +150,18 @@ export function streamExpertConsult(
   const finish = () => {
     if (finished) return
     finished = true
+    watchdog.cancel()
     onDone()
   }
+
+  const watchdog = makeIdleWatchdog(() => {
+    if (finished) return
+    finished = true
+    const err = new Error(`服务器 ${STREAM_IDLE_TIMEOUT_MS / 1000}s 无响应，已断开（可重试）`) as StreamError
+    err.status = 504
+    onError(err)
+    xhr.abort()
+  })
 
   const processLines = () => {
     const newData = xhr.responseText.substring(processed)
@@ -145,8 +189,12 @@ export function streamExpertConsult(
     }
   }
 
-  xhr.onprogress = processLines
+  xhr.onprogress = () => {
+    watchdog.touch()
+    processLines()
+  }
   xhr.onload = function () {
+    watchdog.cancel()
     if (xhr.status >= 200 && xhr.status < 300) {
       if (pending.trim()) {
         try {
@@ -157,22 +205,25 @@ export function streamExpertConsult(
       finish()
     } else {
       finished = true
-      onError(new Error(`HTTP ${xhr.status}`) as StreamError)
+      onError(parseHttpError(xhr.status, xhr.responseText))
     }
   }
   xhr.onerror = function () {
     if (finished) return
     finished = true
+    watchdog.cancel()
     onError(new Error('Network error') as StreamError)
   }
   xhr.onabort = function () {
     if (finished) return
     finished = true
+    watchdog.cancel()
     const err = new Error('Request aborted') as StreamError
     err.isAbort = true
     onError(err)
   }
 
+  watchdog.touch()
   xhr.send(JSON.stringify({ idea, conversation_id: conversationId || '' }))
 
   return function abort() { xhr.abort() }
@@ -199,8 +250,18 @@ export function streamChat(
   const finish = () => {
     if (finished) return
     finished = true
+    watchdog.cancel()
     onDone()
   }
+
+  const watchdog = makeIdleWatchdog(() => {
+    if (finished) return
+    finished = true
+    const err = new Error(`服务器 ${STREAM_IDLE_TIMEOUT_MS / 1000}s 无响应，已断开（可重试）`) as StreamError
+    err.status = 504
+    onError(err, fullContent)
+    xhr.abort()
+  })
 
   const processLines = () => {
     const newData = xhr.responseText.substring(processed)
@@ -227,10 +288,12 @@ export function streamChat(
 
   xhr.onprogress = function () {
     if (finished) return
+    watchdog.touch()
     processLines()
   }
 
   xhr.onload = function () {
+    watchdog.cancel()
     if (xhr.status >= 200 && xhr.status < 300) {
       if (pending.trim()) {
         try {
@@ -248,23 +311,26 @@ export function streamChat(
       finish()
     } else {
       finished = true
-      onError(new Error(`HTTP ${xhr.status}`) as StreamError, fullContent)
+      onError(parseHttpError(xhr.status, xhr.responseText), fullContent)
     }
   }
 
   xhr.onerror = function () {
     if (finished) return
     finished = true
+    watchdog.cancel()
     onError(new Error('Network error') as StreamError, fullContent)
   }
   xhr.onabort = function () {
     if (finished) return
     finished = true
+    watchdog.cancel()
     const err = new Error('Request aborted') as StreamError
     err.isAbort = true
     onError(err, fullContent)
   }
 
+  watchdog.touch()
   xhr.send(JSON.stringify({ content, assistant_id: assistantId || '', regenerate }))
 
   return function abort() { xhr.abort() }

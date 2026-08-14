@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from './stores/app'
 import ProjectsPage from './components/ProjectsPage.vue'
@@ -8,8 +8,6 @@ import ToastHost from './components/ToastHost.vue'
 
 const store = useAppStore()
 const { route } = storeToRefs(store)
-
-const toastHost = ref<InstanceType<typeof ToastHost> | null>(null)
 
 onMounted(() => {
   store.fetchProjects()
@@ -21,5 +19,5 @@ onMounted(() => {
     <ProjectsPage v-if="route === 'projects'" key="projects" />
     <WorkspacePage v-else key="workspace" />
   </Transition>
-  <ToastHost ref="toastHost" />
+  <ToastHost />
 </template>

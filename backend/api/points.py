@@ -1,20 +1,26 @@
-import uuid
 import json
 import logging
+import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from backend.database import get_db, fetch_all, fetch_one
-from backend.agents.base import chat_json
+from backend.database import get_db, fetch_all, fetch_one, transaction
+from backend.agents.base import chat_json, LLMError
 from backend.agents.guide_prompts import POINT_CONFIGS
 from backend.agents.guide import POINT_ORDER, POINT_LABELS
 from backend.agents.expert_panel import run_expert_panel
+from backend.services import repo
 from backend.services.rules import get_rules_injection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+
+def _validate_point(point: str) -> None:
+    if point not in POINT_CONFIGS or point not in POINT_ORDER:
+        raise HTTPException(status_code=400, detail=f"Invalid point: {point}")
 
 
 class SummarizeBody(BaseModel):
@@ -86,8 +92,7 @@ async def list_points(project_id: str):
 
 @router.post("/projects/{project_id}/points/{point}/ensure-conversation")
 async def ensure_conversation(project_id: str, point: str):
-    if point not in POINT_CONFIGS:
-        raise HTTPException(status_code=400, detail=f"Invalid point: {point}")
+    _validate_point(point)
 
     db = await get_db()
 
@@ -100,11 +105,11 @@ async def ensure_conversation(project_id: str, point: str):
         conversation_id = conv["id"]
     else:
         conversation_id = str(uuid.uuid4())
-        await db.execute(
-            "INSERT INTO conversations (id, project_id, title, point) VALUES (?, ?, ?, ?)",
-            (conversation_id, project_id, POINT_LABELS.get(point, point), point),
-        )
-        await db.commit()
+        async with transaction():
+            await db.execute(
+                "INSERT INTO conversations (id, project_id, title, point) VALUES (?, ?, ?, ?)",
+                (conversation_id, project_id, POINT_LABELS.get(point, point), point),
+            )
 
     count_row = await fetch_one(
         db,
@@ -116,19 +121,16 @@ async def ensure_conversation(project_id: str, point: str):
     if msg_count == 0:
         intro = POINT_CONFIGS[point].get("intro", "")
         if intro:
-            await db.execute(
-                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'assistant', ?)",
-                (str(uuid.uuid4()), conversation_id, intro),
-            )
-            await db.execute(
-                "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
-                (conversation_id,),
-            )
-            await db.commit()
+            async with transaction():
+                await repo.save_message(db, conversation_id, "assistant", intro)
+                await db.execute(
+                    "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                    (conversation_id,),
+                )
 
     messages = await fetch_all(
         db,
-        "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+        "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
         (conversation_id,),
     )
 
@@ -139,52 +141,43 @@ async def ensure_conversation(project_id: str, point: str):
     }
 
 
+async def _load_prior_background(db, project_id: str, point: str) -> str:
+    """读取已归档的前序设定作为背景（点位顺序按 POINT_ORDER）。"""
+    point_index = POINT_ORDER.index(point)
+    prior_points = POINT_ORDER[:point_index]
+    if not prior_points:
+        return "（无）"
+    rows = await repo.load_finalized_items(db, project_id, prior_points)
+    return repo.format_items_as_background(rows, POINT_LABELS)
+
+
+async def _load_conversation_messages(db, project_id: str, conversation_id: str) -> list[dict]:
+    """加载对话消息，并校验对话属于该项目。"""
+    owner = await repo.conversation_project_id(db, conversation_id)
+    if owner != project_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return await fetch_all(
+        db,
+        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
+        (conversation_id,),
+    )
+
+
 @router.post("/projects/{project_id}/points/{point}/summarize")
 async def summarize_point(project_id: str, point: str, body: SummarizeBody):
-    if point not in POINT_CONFIGS:
-        raise HTTPException(status_code=400, detail=f"Invalid point: {point}")
+    _validate_point(point)
 
     db = await get_db()
-
-    messages = await fetch_all(
-        db,
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
-        (body.conversation_id,),
-    )
+    messages = await _load_conversation_messages(db, project_id, body.conversation_id)
     if not messages:
         raise HTTPException(status_code=400, detail="对话中没有消息可总结")
 
-    point_index = POINT_ORDER.index(point)
-    prior_points = POINT_ORDER[:point_index]
-    background_parts = []
-    if prior_points:
-        prior_placeholders = ",".join("?" for _ in prior_points)
-        prior_rows = await fetch_all(
-            db,
-            f"""SELECT item_type, title, content, metadata FROM workspace_items
-                WHERE project_id = ? AND item_type IN ({prior_placeholders})
-                  AND status IN ('finalized', 'locked')
-                ORDER BY sort_order, created_at""",
-            (project_id, *prior_points),
-        )
-        for r in prior_rows:
-            label = POINT_LABELS.get(r["item_type"], r["item_type"])
-            meta = {}
-            if r.get("metadata"):
-                try:
-                    meta = json.loads(r["metadata"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            background_parts.append(
-                f"【{label}】{r.get('title', '')}\n{r.get('content', '')}\n字段：{json.dumps(meta, ensure_ascii=False)}"
-            )
-    background_text = "\n\n".join(background_parts) if background_parts else "（无）"
+    background_text = await _load_prior_background(db, project_id, point)
 
     config = POINT_CONFIGS[point]
     label = POINT_LABELS.get(point, point)
     intro = config.get("intro", "")
-    fields = config.get("fields", {})
-    fields_hint = json.dumps(fields, ensure_ascii=False, indent=2)
+    fields_hint = json.dumps(config.get("fields", {}), ensure_ascii=False, indent=2)
 
     conversation_text = "\n".join(
         f"{'作者' if m['role'] == 'user' else '策划'}：{m['content']}"
@@ -211,58 +204,36 @@ async def summarize_point(project_id: str, point: str, body: SummarizeBody):
   "fields": {{ "字段名": "字段值" }}
 }}"""
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": prompt}],
-        system_prompt=SUMMARIZE_POINT_SYSTEM_PROMPT,
-        temperature=0.4,
-    )
-
-    if "error" in result:
-        raise HTTPException(status_code=502, detail="AI 返回格式错误，请重试")
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt=SUMMARIZE_POINT_SYSTEM_PROMPT,
+            temperature=0.4,
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"AI 总结失败：{str(e)[:150]}")
 
     summary = result.get("summary", "")
     fields_data = result.get("fields", {})
     if not isinstance(fields_data, dict):
         fields_data = {}
 
-    metadata_json = json.dumps(fields_data, ensure_ascii=False)
-
-    existing = await fetch_one(
-        db,
-        "SELECT id FROM workspace_items WHERE project_id = ? AND item_type = ?",
-        (project_id, point),
+    item_id = await repo.upsert_workspace_item(
+        db, project_id, point,
+        title=POINT_LABELS.get(point, point),
+        content=summary, metadata=fields_data, status="finalized",
     )
-    if existing:
-        item_id = existing["id"]
-        await db.execute(
-            """UPDATE workspace_items
-               SET title = ?, content = ?, metadata = ?, status = 'finalized', updated_at = datetime('now')
-               WHERE id = ?""",
-            (POINT_LABELS.get(point, point), summary, metadata_json, item_id),
-        )
-    else:
-        item_id = str(uuid.uuid4())
-        sort_row = await fetch_one(
-            db,
-            "SELECT MAX(sort_order) AS mx FROM workspace_items WHERE project_id = ?",
-            (project_id,),
-        )
-        sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
-        await db.execute(
-            """INSERT INTO workspace_items
-               (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
-               VALUES (?, ?, ?, 'finalized', ?, ?, ?, NULL, ?)""",
-            (item_id, project_id, point, POINT_LABELS.get(point, point), summary, metadata_json, sort_order),
-        )
 
-    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
-    await db.commit()
+    new_name = await repo.maybe_apply_book_name(db, project_id, fields_data)
+    if new_name:
+        logger.info("[summarize] project=%s auto-named to %r", project_id, new_name)
 
     return {
         "point": point,
         "content": summary,
         "metadata": fields_data,
         "item_id": item_id,
+        "project_name": new_name,
     }
 
 
@@ -271,43 +242,15 @@ class ExpertConsultBody(BaseModel):
     conversation_id: str | None = ""
 
 
-async def _load_background(db, project_id: str, point: str) -> str:
-    """读取已归档的前序设定作为背景"""
-    point_index = POINT_ORDER.index(point)
-    prior_points = POINT_ORDER[:point_index]
-    parts = []
-    if prior_points:
-        placeholders = ",".join("?" for _ in prior_points)
-        rows = await fetch_all(
-            db,
-            f"""SELECT item_type, title, content, metadata FROM workspace_items
-                WHERE project_id = ? AND item_type IN ({placeholders})
-                  AND status IN ('finalized', 'locked')
-                ORDER BY sort_order, created_at""",
-            (project_id, *prior_points),
-        )
-        for r in rows:
-            label = POINT_LABELS.get(r["item_type"], r["item_type"])
-            meta = {}
-            if r.get("metadata"):
-                try:
-                    meta = json.loads(r["metadata"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            parts.append(f"【{label}】{r.get('title', '')}\n{r.get('content', '')}\n字段：{json.dumps(meta, ensure_ascii=False)}")
-    return "\n\n".join(parts) if parts else "（暂无已确定的前序设定）"
-
-
 @router.post("/projects/{project_id}/points/{point}/expert-consult")
 async def expert_consult(project_id: str, point: str, body: ExpertConsultBody):
     """专家圆桌会诊：五位专家多轮讨论 + 主编汇总，流式返回，最终保存。"""
-    if point not in POINT_CONFIGS:
-        raise HTTPException(status_code=400, detail=f"Invalid point: {point}")
+    _validate_point(point)
     if not body.idea.strip():
         raise HTTPException(status_code=400, detail="想法不能为空")
 
     db = await get_db()
-    background = await _load_background(db, project_id, point)
+    background = await _load_prior_background(db, project_id, point)
     rules_inject = await get_rules_injection(project_id)
     if rules_inject:
         background = rules_inject + background
@@ -317,12 +260,8 @@ async def expert_consult(project_id: str, point: str, body: ExpertConsultBody):
 
     conversation_id = ""
     if body.conversation_id:
-        conv = await fetch_one(
-            db,
-            "SELECT id FROM conversations WHERE id = ? AND project_id = ?",
-            (body.conversation_id, project_id),
-        )
-        if conv:
+        owner = await repo.conversation_project_id(db, body.conversation_id)
+        if owner == project_id:
             conversation_id = body.conversation_id
 
     async def _generator():
@@ -330,19 +269,13 @@ async def expert_consult(project_id: str, point: str, body: ExpertConsultBody):
         record_obj = None
         try:
             if conversation_id:
-                await db.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'user', ?)",
-                    (str(uuid.uuid4()), conversation_id, f"/consult {body.idea}"),
-                )
-                await db.execute(
-                    "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
-                    (conversation_id,),
-                )
-                await db.execute(
-                    "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
-                    (project_id,),
-                )
-                await db.commit()
+                async with transaction():
+                    await repo.save_message(db, conversation_id, "user", f"/consult {body.idea}")
+                    await db.execute(
+                        "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                        (conversation_id,),
+                    )
+                    await repo.touch_project(db, project_id)
 
             async for event in run_expert_panel(body.idea, background, intro, label, rounds=2):
                 if event["phase"] == "summary":
@@ -353,18 +286,19 @@ async def expert_consult(project_id: str, point: str, body: ExpertConsultBody):
 
             assistant_text = json.dumps(record_obj, ensure_ascii=False) if record_obj else summary_content
             if conversation_id and assistant_text.strip():
-                await db.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'assistant', ?)",
-                    (str(uuid.uuid4()), conversation_id, assistant_text),
-                )
-                await db.execute(
-                    "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
-                    (conversation_id,),
-                )
-                await db.commit()
+                async with transaction():
+                    await repo.save_message(db, conversation_id, "assistant", assistant_text)
+                    await db.execute(
+                        "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                        (conversation_id,),
+                    )
 
             if summary_content.strip():
-                item_id = await _save_consult_result(db, project_id, point, label, body.idea, summary_content)
+                item_id = await repo.upsert_workspace_item(
+                    db, project_id, point,
+                    title=f"{label}（专家会诊）",
+                    content=summary_content, status="draft",
+                )
                 yield json.dumps({"phase": "saved", "item_id": item_id, "point": point}, ensure_ascii=False) + "\n"
 
         except Exception as e:
@@ -374,41 +308,6 @@ async def expert_consult(project_id: str, point: str, body: ExpertConsultBody):
     return StreamingResponse(_generator(), media_type="application/x-ndjson")
 
 
-async def _save_consult_result(db, project_id: str, point: str, label: str, idea: str, content: str) -> str:
-    """把主编汇总结论保存为 workspace_item（草稿状态，需作者确认）"""
-    existing = await fetch_one(
-        db,
-        "SELECT id FROM workspace_items WHERE project_id = ? AND item_type = ?",
-        (project_id, point),
-    )
-    title = f"{label}（专家会诊）"
-    if existing:
-        item_id = existing["id"]
-        await db.execute(
-            """UPDATE workspace_items
-               SET title = ?, content = ?, status = 'draft', updated_at = datetime('now')
-               WHERE id = ?""",
-            (title, content, item_id),
-        )
-    else:
-        item_id = str(uuid.uuid4())
-        sort_row = await fetch_one(
-            db,
-            "SELECT MAX(sort_order) AS mx FROM workspace_items WHERE project_id = ?",
-            (project_id,),
-        )
-        sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
-        await db.execute(
-            """INSERT INTO workspace_items
-               (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
-               VALUES (?, ?, ?, 'draft', ?, ?, '{}', NULL, ?)""",
-            (item_id, project_id, point, title, content, sort_order),
-        )
-    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
-    await db.commit()
-    return item_id
-
-
 AUTO_GENERATE_SYSTEM_PROMPT = """你是一位资深网文策划，擅长根据一个模糊的创意想法，快速构建出完整的网文设定。
 要求：
 1. summary 是一段 300-600 字的连贯设定描述，要有网文味、有爽点、可直接作为设定文档
@@ -416,52 +315,25 @@ AUTO_GENERATE_SYSTEM_PROMPT = """你是一位资深网文策划，擅长根据�
 3. 充分利用作者的原始想法，同时大胆补全细节，让设定丰满有趣
 4. 如果有已确定的前序设定，必须保持一致和连贯"""
 
+
 class AutoGenerateBody(BaseModel):
     idea: str
     conversation_id: str | None = ""
 
+
 @router.post("/projects/{project_id}/points/{point}/auto-generate")
 async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBody):
-    if point not in POINT_CONFIGS:
-        raise HTTPException(status_code=400, detail=f"Invalid point: {point}")
+    _validate_point(point)
 
     db = await get_db()
 
     conversation_id = ""
     if body.conversation_id:
-        conv = await fetch_one(
-            db,
-            "SELECT id FROM conversations WHERE id = ? AND project_id = ?",
-            (body.conversation_id, project_id),
-        )
-        if conv:
+        owner = await repo.conversation_project_id(db, body.conversation_id)
+        if owner == project_id:
             conversation_id = body.conversation_id
 
-    point_index = POINT_ORDER.index(point)
-    prior_points = POINT_ORDER[:point_index]
-    background_parts = []
-    if prior_points:
-        prior_placeholders = ",".join("?" for _ in prior_points)
-        prior_rows = await fetch_all(
-            db,
-            f"""SELECT item_type, title, content, metadata FROM workspace_items
-                WHERE project_id = ? AND item_type IN ({prior_placeholders})
-                  AND status IN ('finalized', 'locked')
-                ORDER BY sort_order, created_at""",
-            (project_id, *prior_points),
-        )
-        for r in prior_rows:
-            label = POINT_LABELS.get(r["item_type"], r["item_type"])
-            meta = {}
-            if r.get("metadata"):
-                try:
-                    meta = json.loads(r["metadata"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            background_parts.append(
-                f"【{label}】{r.get('title', '')}\n{r.get('content', '')}\n字段：{json.dumps(meta, ensure_ascii=False)}"
-            )
-    background_text = "\n\n".join(background_parts) if background_parts else "（无）"
+    background_text = await _load_prior_background(db, project_id, point)
 
     rules_inject = await get_rules_injection(project_id)
     rules_section = rules_inject if rules_inject else ""
@@ -469,8 +341,7 @@ async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBod
     config = POINT_CONFIGS[point]
     label = POINT_LABELS.get(point, point)
     intro = config.get("intro", "")
-    fields = config.get("fields", {})
-    fields_hint = json.dumps(fields, ensure_ascii=False, indent=2)
+    fields_hint = json.dumps(config.get("fields", {}), ensure_ascii=False, indent=2)
 
     prompt = f"""作者想创作一部网文，现在需要确定【{label}】。
 {rules_section}
@@ -495,71 +366,40 @@ async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBod
   "fields": {{ "字段名": "字段值" }}
 }}"""
 
-    result = await chat_json(
-        messages=[{"role": "user", "content": prompt}],
-        system_prompt=AUTO_GENERATE_SYSTEM_PROMPT,
-        temperature=0.8,
-    )
-
-    if "error" in result:
-        raise HTTPException(status_code=502, detail="AI 生成失败，请重试")
+    try:
+        result = await chat_json(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt=AUTO_GENERATE_SYSTEM_PROMPT,
+            temperature=0.8,
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"AI 生成失败：{str(e)[:150]}")
 
     summary = result.get("summary", "")
     fields_data = result.get("fields", {})
     if not isinstance(fields_data, dict):
         fields_data = {}
 
-    metadata_json = json.dumps(fields_data, ensure_ascii=False)
-
-    existing = await fetch_one(
-        db,
-        "SELECT id FROM workspace_items WHERE project_id = ? AND item_type = ?",
-        (project_id, point),
+    item_id = await repo.upsert_workspace_item(
+        db, project_id, point,
+        title=POINT_LABELS.get(point, point),
+        content=summary, metadata=fields_data, status="finalized",
     )
-    if existing:
-        item_id = existing["id"]
-        await db.execute(
-            """UPDATE workspace_items
-               SET title = ?, content = ?, metadata = ?, status = 'finalized', updated_at = datetime('now')
-               WHERE id = ?""",
-            (POINT_LABELS.get(point, point), summary, metadata_json, item_id),
-        )
-    else:
-        item_id = str(uuid.uuid4())
-        sort_row = await fetch_one(
-            db,
-            "SELECT MAX(sort_order) AS mx FROM workspace_items WHERE project_id = ?",
-            (project_id,),
-        )
-        sort_order = (sort_row["mx"] or 0) + 1 if sort_row else 1
-        await db.execute(
-            """INSERT INTO workspace_items
-               (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
-               VALUES (?, ?, ?, 'finalized', ?, ?, ?, NULL, ?)""",
-            (item_id, project_id, point, POINT_LABELS.get(point, point), summary, metadata_json, sort_order),
-        )
 
-    await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
-    await db.commit()
+    new_name = await repo.maybe_apply_book_name(db, project_id, fields_data)
+    if new_name:
+        logger.info("[auto-generate] project=%s auto-named to %r", project_id, new_name)
 
     if conversation_id:
-        await db.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'user', ?)",
-            (str(uuid.uuid4()), conversation_id, f"/goal {body.idea}"),
-        )
-        fields_lines = []
-        if isinstance(fields_data, dict):
+        async with transaction():
+            await repo.save_message(db, conversation_id, "user", f"/gen {body.idea}")
             fields_lines = [f"- **{k}**: {v}" for k, v in fields_data.items() if v]
-        fields_block = "\n\n**结构化字段：**\n" + "\n".join(fields_lines) if fields_lines else ""
-        await db.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'assistant', ?)",
-            (str(uuid.uuid4()), conversation_id, summary + fields_block),
-        )
-        await db.execute(
-            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
-            (conversation_id,),
-        )
-        await db.commit()
+            fields_block = "\n\n**结构化字段：**\n" + "\n".join(fields_lines) if fields_lines else ""
+            await repo.save_message(db, conversation_id, "assistant", summary + fields_block)
+            await db.execute(
+                "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                (conversation_id,),
+            )
 
     logger.info("[auto-generate] project=%s point=%s idea=%s", project_id, point, body.idea[:50])
 
@@ -568,4 +408,5 @@ async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBod
         "content": summary,
         "metadata": fields_data,
         "item_id": item_id,
+        "project_name": new_name,
     }

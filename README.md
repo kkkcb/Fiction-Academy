@@ -1,33 +1,37 @@
 # Fiction Academy
 
-AI 驱动的中文网文创作平台，支持多助理协作、世界观管理、章节生成和编年录追踪。
+AI 驱动的中文网文创作平台，支持多助理协作、骨架引导、世界观管理、知识图谱、章节生成和编年录追踪。
 
 ## 功能
 
-- **项目管理** — 创建多个小说项目，每个项目独立管理世界观、角色、大纲和章节
-- **多助理系统** — 内置小说创作助手，支持自定义助理（独立 System Prompt + 模型配置）
-- **世界观工作区** — 结构化管理世界观设定、角色卡、大纲和章节
-- **AI 对话** — 流式输出，上下文自动携带世界观和编年录信息
-- **编年录** — 章节定稿后自动提取时间线、角色、关键事件和未解线索
-- **重新生成** — 对 AI 回复不满意可一键重新生成
-- **重命名** — 项目和对话均支持内联重命名
+- **项目管理** — 多小说项目，各自独立管理世界观、角色、大纲和章节
+- **骨架引导** — 五点位引导（故事核/世界观/核心人物/倒推大纲/正向大纲），支持 `/gen` 快速生成与 `/consult` 专家圆桌会诊
+- **Goal 模式** — `/goal` 给出创作目标，AI 拆解任务逐步执行（状态持久化，重启不丢）
+- **知识图谱** — 实体/关系结构化管理，三层知识（事实/已揭示/伏笔），按章节切片注入，写章时自动屏蔽伏笔层防剧透
+- **一致性检测** — 对全部设定做矛盾/冲突/缺漏检查
+- **三段式写章** — 章纲（备稿）→ 执笔 → 独立审校（Loop 验证器）
+- **统一上下文管道** — 守则/点位/章纲/图谱/设定/编年录/前情按优先级与 token 预算统一组装
+- **AI 对话** — 流式输出（含思考链）、上下文自动携带设定、重新生成、手动停止
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Python 3.13, FastAPI, Uvicorn, aiosqlite |
-| LLM | OpenAI SDK (兼容小米 mimo API) |
-| 前端 | 原生 JS (ES Module), 无框架无构建 |
-| 数据库 | SQLite (aiosqlite) |
+| 后端 | Python 3.13, FastAPI, Uvicorn, aiosqlite, jieba |
+| LLM | OpenAI SDK（默认智谱 bigmodel，兼容任意 OpenAI 协议服务） |
+| 前端 | Vue 3 + TypeScript + Pinia + Vite（`frontend-vue/`，主线） |
+| 数据库 | SQLite（WAL，autocommit + 显式事务） |
+| 测试 | pytest + pytest-asyncio + httpx（`backend/tests/`） |
 
 ## 快速开始
 
 ### 1. 环境准备
 
 ```bash
-# 安装依赖
 pip install -r backend/requirements.txt
+pip install -r backend/requirements-dev.txt   # 测试依赖（可选）
+
+cd frontend-vue && npm install && npm run build   # 构建前端产物（后端直接托管）
 ```
 
 ### 2. 配置
@@ -43,69 +47,75 @@ FA_DEFAULT_MODEL=glm-5.2
 ### 3. 启动
 
 ```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开 http://localhost:8000
+浏览器打开 http://localhost:8000 （FastAPI 自动托管 `frontend-vue/dist`）。
+
+前端开发模式（热更新）：
+
+```bash
+cd frontend-vue && npm run dev    # http://localhost:5173，/api 代理到 8000
+```
+
+### 4. 测试
+
+```bash
+python -m pytest          # 后端测试（LLM 已打桩，不消耗 token）
+cd frontend-vue && npm run typecheck && npm run build
+```
 
 ## 项目结构
 
 ```
 Fiction-Academy/
 ├── backend/
-│   ├── agents/          # LLM 调用层
-│   │   ├── base.py      # chat_stream / chat_text / chat_json
-│   │   ├── chronicle.py # 编年录生成
-│   │   └── loader.py    # 角色加载
-│   ├── api/             # API 路由
-│   │   ├── assistants.py  # 助理 CRUD
-│   │   ├── chat.py        # 对话 + 流式聊天
-│   │   ├── chronicle.py   # 编年录
-│   │   ├── projects.py    # 项目管理
-│   │   └── workspace.py   # 工作区条目
-│   ├── workflow/        # 工作流（规划中）
-│   ├── config.py        # 配置
-│   ├── database.py      # 数据库初始化
-│   └── main.py          # FastAPI 入口
-├── characters/          # 预置角色定义
-│   ├── writers/         # 作者角色
-│   ├── readers/         # 读者角色
-│   ├── operators/       # 运营角色
-│   ├── peers/           # 同行角色
-│   ├── content-reviewers/  # 内容审核
-│   └── compliance-reviewers/ # 合规审核
-├── frontend/
-│   ├── js/
-│   │   ├── api.js       # HTTP 请求封装
-│   │   ├── app.js       # UI 渲染 + 事件处理
-│   │   └── store.js     # 状态管理
-│   ├── index.html
-│   └── style.css
-├── docs/                # 设计文档
-│   └── worldbuilding-design.md  # 世界观模板设计
-└── data/                # 运行时数据（gitignore）
-    └── fiction_academy.db
+│   ├── agents/           # LLM Agent 层
+│   │   ├── base.py       # LLM 网关：统一重试/错误分类/结构化校验/用量记录
+│   │   ├── expert_panel.py    # 专家圆桌（断开自动取消，无孤儿调用）
+│   │   ├── reviewer.py  # 独立审校
+│   │   └── ...
+│   ├── api/              # FastAPI 路由（参数校验 + 编排）
+│   ├── services/
+│   │   ├── context_builder.py # 统一上下文管道（Provider + token 预算）
+│   │   ├── repo.py       # 共享数据访问助手（metadata 解析/upsert/归属校验）
+│   │   ├── goal.py       # Goal 模式状态机（goals/goal_steps 表持久化）
+│   │   ├── kg.py         # 知识图谱（含注入预算）
+│   │   ├── wiki.py       # 设定检索（jieba 分词）
+│   │   └── ...
+│   ├── tests/            # pytest 测试
+│   ├── config.py         # 配置（LLM_*，兼容旧 XIAOMI_* 别名）
+│   ├── database.py       # SQLite（顺序迁移、失败即启动失败、事务助手）
+│   └── main.py           # 入口（托管 frontend-vue/dist）
+├── frontend-vue/         # 主线前端（Vue3 + TS + Pinia）
+│   └── src/
+│       ├── api.ts        # HTTP/流式封装（空闲超时、错误详情、可中断）
+│       ├── stores/app.ts # Pinia store（流式节流、停止生成、竞态防护）
+│       └── components/   # DOMPurify 消毒所有 Markdown 渲染
+├── frontend/             # 旧版原生 JS 前端（已冻结，仅存档；不再被托管）
+├── characters/           # 预置角色定义
+├── docs/                 # 设计文档
+└── data/                 # 运行时数据（gitignore）
 ```
 
-## API 概览
+## 环境变量
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/projects` | 项目列表 |
-| POST | `/api/projects` | 创建项目 |
-| GET | `/api/projects/{id}/conversations` | 对话列表 |
-| POST | `/api/conversations/{id}/chat/stream` | 流式聊天 |
-| GET | `/api/projects/{id}/workspace` | 工作区条目 |
-| GET | `/api/projects/{id}/chronicle` | 编年录 |
-| GET | `/api/assistants` | 助理列表 |
-| POST | `/api/assistants` | 创建助理 |
-| PUT | `/api/assistants/{id}` | 更新助理 |
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LLM_API_KEY` | 空 | 必填，模型服务密钥 |
+| `LLM_BASE_URL` | bigmodel | OpenAI 兼容接入点 |
+| `FA_DEFAULT_MODEL` | glm-5.2 | 默认模型 |
+| `FA_DATABASE_PATH` | `data/fiction_academy.db` | SQLite 路径 |
+| `FA_CORS_ORIGINS` | localhost:8000/5173 | CORS 白名单 |
+| `FA_CHAT_HISTORY_LIMIT` | 40 | 携带的历史消息数 |
 
-## 规划中
+## 斜杠命令（前端）
 
-- **世界观引导模板** — 五层世界观体系，引导用户逐步构建完整世界观
-- **循环模式** — 多角色基于世界观自然演绎，类似斯坦福小镇
-- **角色卡结构化** — 标准化角色定义（性格、动机、人际关系、与世界观的关联）
+| 命令 | 场景 | 说明 |
+|---|---|---|
+| `/gen <想法>` | 点位对话 | 快速生成该点位设定 |
+| `/consult <想法>` | 点位对话 | 五位专家圆桌会诊 |
+| `/goal <目标>` | 任意 | Goal 模式：拆解任务逐步执行 |
 
 ## License
 

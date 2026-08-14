@@ -1,197 +1,28 @@
-import uuid
 import json
 import logging
+import uuid
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from backend.database import get_db, fetch_all, fetch_one
-from backend.agents.base import chat_stream
-from backend.agents.guide_prompts import POINT_CONFIGS
-from backend.agents.guide import POINT_LABELS
+from backend.database import get_db, fetch_all, fetch_one, transaction
+from backend.agents.base import chat_stream, LLMError
+from backend.agents.personas import POINT_PERSONAS
 from backend.config import CHAT_HISTORY_LIMIT, SYSTEM_PROMPT
-from backend.services.wiki import (
-    detect_scene,
-    parse_wiki_pages,
-    query_wiki,
-    apply_token_budget,
-    assemble_context,
-    estimate_tokens,
-)
-from backend.services.rules import get_rules_injection
-from backend.services.kg import build_kg_injection
+from backend.services import repo
+from backend.services.context_builder import ContextRequest, build_chat_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+MSG_ORDER = "created_at ASC, rowid ASC"
 
 
 class ChatRequest(BaseModel):
     content: str = ""
     assistant_id: str | None = None
     regenerate: bool = False
-
-
-async def _build_context_system_prompt(db, project_id: str, user_content: str = "", point: str = "") -> str:
-    rules_inject = await get_rules_injection(project_id)
-    point_guide = ""
-    if point and point in POINT_CONFIGS:
-        config = POINT_CONFIGS[point]
-        label = POINT_LABELS.get(point, point)
-        intro = config.get("intro", "")
-        fields = config.get("fields", {})
-        fields_text = "\n".join(f"- {k}: {v}" for k, v in fields.items())
-        point_guide = f"""<point_guide priority="critical">
-你正在引导作者确定【{label}】。这是一个专门的点位对话。
-
-点位说明：
-{intro}
-
-本轮需要确定的字段：
-{fields_text}
-
-请在对话中自然地引导作者逐一确定这些字段。基于已确定的背景做个性化引导。
-</point_guide>
-"""
-    scene = detect_scene(user_content)
-    logger.info("[context] project=%s scene=%s", project_id, scene)
-
-    ws_rows = await fetch_all(
-        db,
-        """SELECT item_type, title, content, metadata FROM workspace_items
-           WHERE project_id = ? AND item_type IN (
-               'story_core', 'world_setting', 'character_setting',
-               'outline', 'outline_reverse', 'foreshadow'
-           ) AND status IN ('locked', 'finalized')
-           ORDER BY sort_order, created_at""",
-        (project_id,),
-    )
-    chapter_rows = []
-    chapter_plan_row = None
-    if scene in ("write_chapter", "edit_chapter"):
-        chapter_rows = await fetch_all(
-            db,
-            "SELECT item_type, title, content, metadata, chapter_number FROM workspace_items WHERE project_id = ? AND item_type = 'chapter' AND status IN ('finalized', 'locked') ORDER BY chapter_number DESC LIMIT 5",
-            (project_id,),
-        )
-        chapter_plan_row = await fetch_one(
-            db,
-            """SELECT content, metadata, chapter_number FROM workspace_items
-               WHERE project_id = ? AND item_type = 'chapter_plan'
-                     AND status IN ('finalized', 'locked')
-               ORDER BY chapter_number DESC LIMIT 1""",
-            (project_id,),
-        )
-
-    all_core_pages = []
-    for r in ws_rows:
-        pages = parse_wiki_pages(r["content"], r["item_type"], r["title"] or "")
-        all_core_pages.extend(pages)
-
-    chapter_pages = []
-    for r in chapter_rows:
-        title = r["title"] or f"第{r.get('chapter_number', '?')}章"
-        content = r["content"] or ""
-        meta = {}
-        if r.get("metadata"):
-            try:
-                meta = json.loads(r["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                meta = {}
-        summary = (meta.get("summary") or "").strip()
-        if summary:
-            content = summary
-            title_prefix = f"### {title}（前情摘要）\n"
-        elif len(content) > 3000:
-            content = content[:3000] + "\n...(后续内容省略)"
-            title_prefix = f"### {title}\n"
-        else:
-            title_prefix = f"### {title}\n"
-        chapter_pages.append({
-            "type": "chapter",
-            "title": title,
-            "content": title_prefix + content,
-            "keywords": set(),
-            "score": 0,
-        })
-
-    chronicle_row = await fetch_one(
-        db,
-        "SELECT raw_text, timeline, key_events, unresolved_threads FROM chronicle WHERE project_id = ?",
-        (project_id,),
-    )
-    chronicle_text = ""
-    if chronicle_row:
-        chronicle_text = chronicle_row.get("raw_text", "")
-        if not chronicle_text:
-            try:
-                tl = json.loads(chronicle_row.get("timeline", "[]"))
-                ce = json.loads(chronicle_row.get("key_events", "[]"))
-                ur = json.loads(chronicle_row.get("unresolved_threads", "[]"))
-                lines = []
-                for x in tl[:20]:
-                    if isinstance(x, dict):
-                        lines.append(f"- [{x.get('time', '')}] {x.get('event', '')}")
-                for x in ce[:10]:
-                    lines.append(f"- 关键事件: {x}" if not isinstance(x, dict) else f"- 关键事件: {x.get('event', x.get('title', ''))}")
-                if ur:
-                    lines.append("- 未回收伏笔:")
-                    for x in ur[:10]:
-                        lines.append(f"  · {x}" if not isinstance(x, dict) else f"  · {x.get('content', x.get('hint', ''))}")
-                chronicle_text = "\n".join(lines)
-            except Exception:
-                chronicle_text = ""
-
-    layer1 = query_wiki(all_core_pages, user_content, scene, max_pages=10)
-    layer2 = chapter_pages
-    layer3: list[dict] = []
-
-    layer1, layer2, layer3 = apply_token_budget(layer1, layer2, layer3)
-
-    chapter_plan_prefix = ""
-    current_chapter = None
-    if chapter_plan_row:
-        plan_meta = {}
-        if chapter_plan_row.get("metadata"):
-            try:
-                plan_meta = json.loads(chapter_plan_row["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-        plan_num = chapter_plan_row.get("chapter_number", "?")
-        if isinstance(plan_num, int):
-            current_chapter = plan_num
-        chapter_plan_prefix = (
-            f"\n\n<chapter_plan priority=\"critical\">\n"
-            f"你正在写【第{plan_num}章】，必须严格遵循以下章纲：\n"
-            f"{chapter_plan_row['content']}\n"
-            f"</chapter_plan>\n"
-            f"注意：核心冲突、爽点设计、断章钩子必须按章纲执行，不要即兴偏离。\n"
-        )
-
-    kg_inject = await build_kg_injection(project_id, scene=scene, chapter=current_chapter)
-
-    context_body = assemble_context(layer1, layer2, layer3, chronicle_text)
-    context_body = rules_inject + kg_inject + point_guide + chapter_plan_prefix + context_body
-
-    total_tokens = estimate_tokens(context_body)
-    logger.info(
-        "[context] core=%d chapters=%d chronicle=%d tokens≈%d",
-        len(layer1), len(layer2), bool(chronicle_text), total_tokens,
-    )
-
-    final_prompt = (SYSTEM_PROMPT + "\n\n" + context_body) if context_body else SYSTEM_PROMPT
-    logger.info(
-        "[context-DEBUG] project=%s rules=%d kg=%d point_guide=%d chapter_plan=%d ws_context=%d total_len=%d | top80=%s",
-        project_id,
-        len(rules_inject),
-        len(kg_inject),
-        len(point_guide),
-        len(chapter_plan_prefix),
-        len(context_body) - len(rules_inject) - len(kg_inject) - len(point_guide) - len(chapter_plan_prefix),
-        len(final_prompt),
-        repr(final_prompt[:80]),
-    )
-
-    return final_prompt
 
 
 async def _get_assistant_prompt(db, assistant_id: str | None) -> tuple[str, str]:
@@ -218,15 +49,12 @@ async def list_conversations(project_id: str):
 async def create_conversation(project_id: str, title: str = "新对话"):
     db = await get_db()
     cid = str(uuid.uuid4())
-    await db.execute(
-        "INSERT INTO conversations (id, project_id, title) VALUES (?, ?, ?)",
-        (cid, project_id, title),
-    )
-    await db.execute(
-        "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
-        (project_id,),
-    )
-    await db.commit()
+    async with transaction():
+        await db.execute(
+            "INSERT INTO conversations (id, project_id, title) VALUES (?, ?, ?)",
+            (cid, project_id, title),
+        )
+        await repo.touch_project(db, project_id)
     return {"id": cid, "project_id": project_id, "title": title}
 
 
@@ -235,7 +63,7 @@ async def get_messages(conversation_id: str):
     db = await get_db()
     rows = await fetch_all(
         db,
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+        f"SELECT * FROM messages WHERE conversation_id = ? ORDER BY {MSG_ORDER}",
         (conversation_id,),
     )
     return rows
@@ -247,15 +75,12 @@ async def update_conversation(conversation_id: str, title: str):
     row = await fetch_one(db, "SELECT project_id FROM conversations WHERE id = ?", (conversation_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    await db.execute(
-        "UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?",
-        (title, conversation_id),
-    )
-    await db.execute(
-        "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
-        (row["project_id"],),
-    )
-    await db.commit()
+    async with transaction():
+        await db.execute(
+            "UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?",
+            (title, conversation_id),
+        )
+        await repo.touch_project(db, row["project_id"])
     return {"id": conversation_id, "title": title}
 
 
@@ -265,12 +90,9 @@ async def delete_conversation(conversation_id: str):
     row = await fetch_one(db, "SELECT project_id FROM conversations WHERE id = ?", (conversation_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    await db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
-    await db.execute(
-        "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
-        (row["project_id"],),
-    )
-    await db.commit()
+    async with transaction():
+        await db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        await repo.touch_project(db, row["project_id"])
     return {"ok": True}
 
 
@@ -306,40 +128,37 @@ async def _chat_stream_generator(
     if regenerate:
         last_assistant = await fetch_one(
             db,
-            "SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+            f"SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (conversation_id,),
         )
-        if last_assistant:
-            await db.execute("DELETE FROM messages WHERE id = ?", (last_assistant["id"],))
-            await db.commit()
         last_user = await fetch_one(
             db,
-            "SELECT content FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+            f"SELECT id, content FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (conversation_id,),
         )
+        async with transaction():
+            if last_assistant:
+                await db.execute("DELETE FROM messages WHERE id = ?", (last_assistant["id"],))
+        # 重新生成复用已有 user 消息：不再追加，历史里已包含它
         user_content = last_user["content"] if last_user else ""
+        if not user_content:
+            yield json.dumps({"error": "没有可重新生成的消息"}, ensure_ascii=False) + "\n"
+            return
     else:
         if not user_content.strip():
             yield json.dumps({"error": "消息不能为空"}, ensure_ascii=False) + "\n"
             return
-        user_msg_id = str(uuid.uuid4())
-        await db.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'user', ?)",
-            (user_msg_id, conversation_id, user_content),
-        )
-        await db.execute(
-            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
-            (conversation_id,),
-        )
-        await db.execute(
-            "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
-            (project_id,),
-        )
-        await db.commit()
+        async with transaction():
+            await repo.save_message(db, conversation_id, "user", user_content)
+            await db.execute(
+                "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                (conversation_id,),
+            )
+            await repo.touch_project(db, project_id)
 
     history = await fetch_all(
         db,
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+        f"SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY {MSG_ORDER}",
         (conversation_id,),
     )
     recent_history = history[-CHAT_HISTORY_LIMIT:]
@@ -347,16 +166,30 @@ async def _chat_stream_generator(
         recent_history = recent_history[1:]
 
     system_prompt_override, assistant_model = await _get_assistant_prompt(db, assistant_id)
-    fixed_context = await _build_context_system_prompt(db, project_id, user_content, point)
+    req = ContextRequest(
+        project_id=project_id,
+        user_content=user_content,
+        point=point,
+    )
+    context_body = await build_chat_context(req)
 
+    # 基础人格优先级：显式选择的助理 > 点位专属角色 > 默认助手
     if system_prompt_override:
-        final_system_prompt = system_prompt_override + "\n\n" + fixed_context
+        base_prompt = system_prompt_override
+    elif point in POINT_PERSONAS:
+        base_prompt = POINT_PERSONAS[point][1]
     else:
-        final_system_prompt = fixed_context
+        base_prompt = SYSTEM_PROMPT
 
-    messages = recent_history + [{"role": "user", "content": user_content}]
+    final_system_prompt = (base_prompt + "\n\n" + context_body) if context_body else base_prompt
 
-    logger.info("[stream] conversation=%s, assistant=%s, history=%d", conversation_id, assistant_id or "default", len(recent_history))
+    # 非 regenerate 时 user 消息刚写库、已在 recent_history 里，不重复追加
+    messages = list(recent_history)
+    if regenerate and user_content and (not messages or messages[-1]["role"] != "user"):
+        messages.append({"role": "user", "content": user_content})
+
+    logger.info("[stream] conversation=%s assistant=%s history=%d regenerate=%s",
+                conversation_id, assistant_id or "default", len(messages), regenerate)
 
     full_reply = ""
     try:
@@ -366,34 +199,24 @@ async def _chat_stream_generator(
             else:
                 full_reply += chunk
                 yield json.dumps({"content": chunk}, ensure_ascii=False) + "\n"
-    except Exception as e:
-        logger.error("[stream] LLM error for conversation=%s: %s", conversation_id, e, exc_info=True)
+    except LLMError as e:
+        logger.error("[stream] LLM error for conversation=%s: %s", conversation_id, e)
         if full_reply:
-            assistant_msg_id = str(uuid.uuid4())
-            db2 = await get_db()
-            await db2.execute(
-                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'assistant', ?)",
-                (assistant_msg_id, conversation_id, full_reply + f"\n\n[生成中断: {e}]"),
-            )
-            await db2.commit()
+            await repo.save_message(db, conversation_id, "assistant", full_reply + f"\n\n[生成中断: {e}]")
+        yield json.dumps({"error": f"生成失败: {e}"}, ensure_ascii=False) + "\n"
+        return
+    except Exception as e:
+        logger.error("[stream] unexpected error for conversation=%s: %s", conversation_id, e, exc_info=True)
         yield json.dumps({"error": f"生成失败: {e}"}, ensure_ascii=False) + "\n"
         return
 
     if full_reply.strip():
-        assistant_msg_id = str(uuid.uuid4())
-        db3 = await get_db()
-        await db3.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'assistant', ?)",
-            (assistant_msg_id, conversation_id, full_reply),
-        )
-        await db3.execute(
-            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
-            (conversation_id,),
-        )
-        await db3.execute(
-            "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
-            (project_id,),
-        )
-        await db3.commit()
+        async with transaction():
+            await repo.save_message(db, conversation_id, "assistant", full_reply)
+            await db.execute(
+                "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                (conversation_id,),
+            )
+            await repo.touch_project(db, project_id)
 
     yield json.dumps({"done": True}, ensure_ascii=False) + "\n"
