@@ -75,8 +75,10 @@ function onContextMenu(e: MouseEvent) {
 function closeCtx() { ctxMenu.value = null }
 async function onDeleteMessage() {
   closeCtx()
+  const id = m.value.id
+  if (!id) return
   if (!confirm('删除这条消息？删除后不可恢复。')) return
-  await store.deleteMessage(m.value.id)
+  await store.deleteMessage(id)
 }
 function onCtxEsc(e: KeyboardEvent) {
   if (e.key === 'Escape' && ctxMenu.value) closeCtx()

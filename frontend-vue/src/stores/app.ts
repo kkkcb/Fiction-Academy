@@ -1165,6 +1165,7 @@ export const useAppStore = defineStore('app', () => {
     createConversation,
     selectConversation,
     deleteConversation,
+    deleteMessage,
     renameConversation,
     fetchMessages,
     sendMessage,
