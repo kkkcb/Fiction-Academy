@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import type { WorkspaceItem } from '../types'
-import { POINT_NAV, STATUS_LABELS, relativeTime } from '../utils/format'
+import { POINT_NAV, STATUS_LABELS, relativeTime, formatMd } from '../utils/format'
 
 const store = useAppStore()
 const {
@@ -94,9 +94,9 @@ async function runReview() {
   }
 }
 
-// 段落渲染：按空行/换行拆段，逐段转义
-function paragraphs(text: string): string[] {
-  return (text || '').split(/\n+/).map(s => s.trim()).filter(Boolean)
+// 正文渲染：每行视为一段（单换行转双换行交给 markdown），偶带 markdown 语法也能正确显示
+function renderProse(text: string | null | undefined): string {
+  return formatMd((text || '').split(/\n+/).join('\n\n'), { cache: false })
 }
 function wordCountOf(item: WorkspaceItem): number {
   return (item.content || '').length
@@ -173,7 +173,7 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
           </div>
           <div v-if="isWritingChapter && !writingContent" class="reader-waiting">{{ writingPhase || '正在准备…' }}</div>
           <article class="reader-content">
-            <p v-for="(para, i) in paragraphs(writingContent)" :key="i">{{ para }}</p>
+            <div v-html="renderProse(writingContent)"></div>
             <span v-if="isWritingChapter" class="writing-cursor"></span>
           </article>
         </template>
@@ -193,13 +193,11 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
             <button class="plan-toggle" @click="showPlan = !showPlan">
               📋 本章章纲 <span class="plan-arrow" :class="{ open: showPlan }">▾</span>
             </button>
-            <div v-show="showPlan" class="plan-body">
-              <p v-for="(para, i) in paragraphs(selectedPlan.content || '')" :key="i">{{ para }}</p>
-            </div>
+            <div v-show="showPlan" class="plan-body markdown-body" v-html="formatMd(selectedPlan.content || '')"></div>
           </div>
 
           <article class="reader-content">
-            <p v-for="(para, i) in paragraphs(selected.content || '')" :key="i">{{ para }}</p>
+            <div v-html="renderProse(selected.content)"></div>
           </article>
 
           <div class="reader-actions">
@@ -416,7 +414,7 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
 .reader-content {
   max-width: 720px;
 }
-.reader-content p {
+.reader-content :deep(p) {
   font-family: var(--font-serif), serif;
   font-size: 14.5px;
   line-height: 2;
@@ -460,7 +458,7 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
   overflow-y: auto;
   border-top: 1px dashed var(--border-subtle);
 }
-.plan-body p {
+.plan-body :deep(p) {
   font-size: 12px;
   line-height: 1.8;
   color: var(--text-secondary);
