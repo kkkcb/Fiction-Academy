@@ -610,6 +610,7 @@ async def _trigger_chronicle_update(project_id: str, chapter_title: str, chapter
                 ),
             )
         else:
+            raw_parts = [f"[{tl.get('time','')}] {tl.get('event','')}" for tl in updated.get("timeline", [])]
             await db.execute(
                 """INSERT INTO chronicle (project_id, timeline, characters, key_events, unresolved_threads, raw_text)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -619,7 +620,7 @@ async def _trigger_chronicle_update(project_id: str, chapter_title: str, chapter
                     json.dumps(updated.get("characters", []), ensure_ascii=False),
                     json.dumps(updated.get("key_events", []), ensure_ascii=False),
                     json.dumps(updated.get("unresolved_threads", []), ensure_ascii=False),
-                    "",
+                    "\n".join(raw_parts),
                 ),
             )
 

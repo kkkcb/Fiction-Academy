@@ -6,6 +6,7 @@ import { POINT_NAV } from '../utils/format'
 import { toggleTheme as toggleThemeUtil } from '../utils/theme'
 import Sidebar from './Sidebar.vue'
 import OverviewPanel from './OverviewPanel.vue'
+import WritingPanel from './WritingPanel.vue'
 import MessageList from './MessageList.vue'
 import ChatInput from './ChatInput.vue'
 import IconMoon from './icons/IconMoon.vue'
@@ -17,6 +18,7 @@ const {
   projects,
   currentPoint,
   activeMode,
+  centerView,
   points,
   isArchiving,
 } = storeToRefs(store)
@@ -123,6 +125,9 @@ async function handleArchive() {
     ></div>
 
     <div class="workspace-center chat-area">
+      <WritingPanel v-if="centerView === 'writing'" class="writing-host" />
+
+      <template v-else>
       <div class="chat-header">
         <div class="chat-header-title">
           <span class="chat-header-project">{{ currentProject?.name }}</span>
@@ -170,6 +175,7 @@ async function handleArchive() {
       <MessageList />
 
       <ChatInput />
+      </template>
     </div>
 
     <div

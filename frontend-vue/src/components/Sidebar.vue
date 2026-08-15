@@ -18,6 +18,8 @@ const {
   activeMode,
   assistants,
   currentAssistantId,
+  centerView,
+  chapters,
 } = storeToRefs(store)
 
 const currentProject = computed(() =>
@@ -118,6 +120,19 @@ function onSelectAssistant(e: Event) {
           <span class="point-nav-desc">{{ p.desc }}</span>
         </div>
       </div>
+
+      <button
+        class="write-nav-item"
+        :class="{ active: centerView === 'writing' }"
+        aria-label="进入小说写作"
+        @click="store.openWriting()"
+      >
+        <span class="write-nav-icon">✍️</span>
+        <div class="point-nav-text">
+          <span class="point-nav-name">小说写作</span>
+          <span class="point-nav-desc">{{ chapters.length ? `已写 ${chapters.length} 章` : '骨架就绪后开写' }}</span>
+        </div>
+      </button>
     </div>
 
     <div class="sidebar-divider"></div>

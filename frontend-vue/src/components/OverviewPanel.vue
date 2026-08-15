@@ -250,6 +250,14 @@ const lintScore = computed(() => {
         <div v-else-if="!lintLoading" class="lint-hint">扫描工作台和知识图谱，自动检测矛盾、冲突和缺漏</div>
       </div>
 
+      <div v-if="archivedPoints.length >= POINT_NAV.length" class="write-cta-card">
+        <div class="write-cta-text">
+          <div class="write-cta-title">骨架已就绪 ✨</div>
+          <div class="write-cta-sub">五个点位全部定稿，可以开始正文创作了</div>
+        </div>
+        <button class="btn btn-primary" aria-label="进入小说写作" @click="store.openWriting()">✍️ 去写作</button>
+      </div>
+
       <div v-if="archivedPoints.length > 0" class="overview-section">
         <div
           v-for="{ nav, item } in archivedPoints"
@@ -368,6 +376,28 @@ const lintScore = computed(() => {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.7;
+}
+.write-cta-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-lighter);
+}
+.write-cta-title {
+  font-family: var(--font-serif), serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.write-cta-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
 }
 .ov-seg {
   color: var(--text-secondary);

@@ -432,6 +432,143 @@ export function reviewChapter(projectId: ID, chapterNumber: number, content: str
   return request('POST', `/projects/${projectId}/chapters/${chapterNumber}/review`, { chapter_content: content })
 }
 
+export interface WriteChapterMeta {
+  chapter_number?: number
+  chapter_title?: string
+  plan?: string
+  message?: string
+}
+
+export interface WriteChapterDone {
+  item_id?: ID
+  chapter_number?: number
+  chapter_title?: string
+  word_count?: number
+}
+
+export interface WriteChapterEvents {
+  onPhase: (meta: WriteChapterMeta) => void
+  onChunk: (text: string) => void
+  onDone: (info: WriteChapterDone) => void
+  onError: (err: StreamError, partialContent: string) => void
+}
+
+/** 一键写下一章：NDJSON 流（章纲阶段 phase → 正文 content → done） */
+export function streamWriteChapter(
+  projectId: ID,
+  opts: { user_hint?: string; regenerate?: boolean },
+  events: WriteChapterEvents,
+): StreamAbort {
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', `${BASE}/projects/${projectId}/chapters/write-stream`)
+  xhr.setRequestHeader('Content-Type', 'application/json')
+
+  let processed = 0
+  let pending = ''
+  let fullContent = ''
+  let finished = false
+  let doneInfo: WriteChapterDone = {}
+
+  const finish = () => {
+    if (finished) return
+    finished = true
+    watchdog.cancel()
+    onDoneSafe()
+  }
+
+  const watchdog = makeIdleWatchdog(() => {
+    if (finished) return
+    finished = true
+    const err = new Error(`服务器 ${STREAM_IDLE_TIMEOUT_MS / 1000}s 无响应，已断开（可重试）`) as StreamError
+    err.status = 504
+    events.onError(err, fullContent)
+    xhr.abort()
+  })
+
+  function onDoneSafe() {
+    // 流可能在 done 行之后还有 onload 触发，只回调一次由 finished 保证
+    events.onDone(doneInfo)
+  }
+
+  const processLines = () => {
+    const newData = xhr.responseText.substring(processed)
+    processed = xhr.responseText.length
+    pending += newData
+    const lines = pending.split('\n')
+    pending = lines.pop() as string
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const obj = JSON.parse(line)
+        if (obj.done) {
+          doneInfo = {
+            item_id: obj.item_id,
+            chapter_number: obj.chapter_number,
+            chapter_title: obj.chapter_title,
+            word_count: obj.word_count,
+          }
+          finish()
+          return
+        }
+        if (obj.error) {
+          if (!finished) {
+            finished = true
+            watchdog.cancel()
+            events.onError(new Error(obj.error) as StreamError, fullContent)
+          }
+          return
+        }
+        if (obj.phase) events.onPhase(obj)
+        if (obj.content) {
+          fullContent += obj.content
+          events.onChunk(obj.content)
+        }
+      } catch {
+        // partial JSON
+      }
+    }
+  }
+
+  xhr.onprogress = () => {
+    if (finished) return
+    watchdog.touch()
+    processLines()
+  }
+
+  xhr.onload = () => {
+    watchdog.cancel()
+    if (xhr.status >= 200 && xhr.status < 300) {
+      if (pending.trim() && !finished) processLines()
+      finish()
+    } else {
+      if (finished) return
+      finished = true
+      events.onError(parseHttpError(xhr.status, xhr.responseText), fullContent)
+    }
+  }
+
+  xhr.onerror = () => {
+    if (finished) return
+    finished = true
+    watchdog.cancel()
+    events.onError(new Error('Network error') as StreamError, fullContent)
+  }
+
+  xhr.onabort = () => {
+    if (finished) return
+    finished = true
+    watchdog.cancel()
+    const err = new Error('Request aborted') as StreamError
+    err.isAbort = true
+    events.onError(err, fullContent)
+  }
+
+  watchdog.touch()
+  xhr.send(JSON.stringify({ user_hint: opts.user_hint || '', regenerate: !!opts.regenerate }))
+
+  return function abort() { xhr.abort() }
+}
+
 export function getPoints(projectId: ID): Promise<PointsData> {
   return request<PointsData>('GET', `/projects/${projectId}/points`)
 }

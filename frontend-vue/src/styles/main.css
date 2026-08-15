@@ -2311,3 +2311,32 @@ body {
 
 /* 头部按钮激活态（面板折叠） */
 .theme-toggle.active { color: var(--accent); }
+
+/* ===== Sidebar 写作入口 ===== */
+.write-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 10px var(--space-3);
+  margin-top: 6px;
+  border: 1px dashed var(--accent-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  font-family: inherit;
+  text-align: left;
+}
+.write-nav-item:hover { background: var(--bg-hover); }
+.write-nav-item.active {
+  background: var(--accent-light);
+  border-style: solid;
+}
+.write-nav-icon { font-size: 14px; line-height: 1; }
+
+/* ===== 写作面板宿主 ===== */
+.writing-host {
+  flex: 1;
+  min-height: 0;
+}

@@ -92,6 +92,24 @@ export const useAppStore = defineStore('app', () => {
 
   const workspaceItems = ref<WorkspaceItem[]>([])
 
+  // ===== 小说写作（中央区视图 + 流式写章状态） =====
+  const centerView = ref<'chat' | 'writing'>('chat')
+  const isWritingChapter = ref(false)
+  const writingPhase = ref('')
+  const writingContent = ref('')
+  const writingChapterNumber = ref<number | null>(null)
+  const writingChapterTitle = ref('')
+  let writingAbort: (() => void) | null = null
+
+  const chapters = computed(() =>
+    workspaceItems.value
+      .filter(i => i.item_type === 'chapter')
+      .sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0)),
+  )
+  const totalChapterWords = computed(() =>
+    chapters.value.reduce((sum, c) => sum + (c.content?.length || 0), 0),
+  )
+
   const chronicle = ref<Chronicle | null>(null)
 
   const kgGraph = ref<KgGraph>({ entities: [], relations: [] })
@@ -426,6 +444,52 @@ export const useAppStore = defineStore('app', () => {
     } catch (e) {
       error.value = (e as Error).message
     }
+  }
+
+  function openWriting() {
+    centerView.value = 'writing'
+  }
+
+  function stopWritingChapter() {
+    writingAbort?.()
+  }
+
+  async function writeNextChapter(projectId: ID, regenerate = false, hint = '') {
+    if (isWritingChapter.value) return
+    isWritingChapter.value = true
+    writingContent.value = ''
+    writingChapterNumber.value = null
+    writingChapterTitle.value = ''
+    writingPhase.value = regenerate ? '正在准备重写本章…' : '正在准备写作…'
+    centerView.value = 'writing'
+    writingAbort = api.streamWriteChapter(projectId, { user_hint: hint, regenerate }, {
+      onPhase: meta => {
+        writingPhase.value = meta.message || ''
+        if (meta.chapter_number) writingChapterNumber.value = meta.chapter_number
+        if (meta.chapter_title) writingChapterTitle.value = meta.chapter_title
+      },
+      onChunk: text => {
+        writingPhase.value = ''
+        writingContent.value += text
+      },
+      onDone: async () => {
+        isWritingChapter.value = false
+        writingPhase.value = ''
+        notifySuccess('本章已完成并存档，编年史已更新')
+        await fetchWorkspaceItems(projectId)
+        await fetchKgGraph(projectId).catch(() => {})
+      },
+      onError: (err, partial) => {
+        isWritingChapter.value = false
+        writingPhase.value = ''
+        if (err.isAbort) {
+          notifySuccess('已停止（已有内容保留为草稿）')
+        } else {
+          error.value = `章节生成失败：${err.message}`
+        }
+        if (partial) fetchWorkspaceItems(projectId)
+      },
+    })
   }
 
   async function createWorkspaceItem(projectId: ID, data: WorkspaceItemInput) {
@@ -912,6 +976,11 @@ export const useAppStore = defineStore('app', () => {
 
   async function navigateTo(routeVal: string, params: NavPatch = {}) {
     _abortCurrentStream()
+    writingAbort?.()
+    isWritingChapter.value = false
+    writingContent.value = ''
+    writingPhase.value = ''
+    centerView.value = 'chat'
     const token = ++_navToken
 
     const patch: NavPatch = {
@@ -1046,6 +1115,17 @@ export const useAppStore = defineStore('app', () => {
     points,
     currentPoint,
     activeMode,
+    centerView,
+    chapters,
+    totalChapterWords,
+    isWritingChapter,
+    writingPhase,
+    writingContent,
+    writingChapterNumber,
+    writingChapterTitle,
+    openWriting,
+    stopWritingChapter,
+    writeNextChapter,
     isSummarizing,
     isArchiving,
     assistants,
