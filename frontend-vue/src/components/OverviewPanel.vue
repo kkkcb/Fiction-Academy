@@ -42,6 +42,11 @@ function metaFields(item: WorkspaceItem): [string, unknown][] {
   return Object.entries(meta).filter(([, v]) => v).slice(0, 4)
 }
 
+function shortVal(v: unknown): string {
+  const s = String(v)
+  return s.length > 80 ? s.slice(0, 80) + '…' : s
+}
+
 const editingId = ref<ID | null>(null)
 const editingContent = ref<string>('')
 
@@ -261,7 +266,7 @@ const lintScore = computed(() => {
             <div v-if="metaFields(item).length > 0" class="ov-fields">
               <div v-for="[k, v] in metaFields(item)" :key="k" class="ov-field">
                 <span class="ov-field-key">{{ propertyLabel(k) }}</span>
-                <span class="ov-field-val">{{ String(v).slice(0, 60) }}</span>
+                <span class="ov-field-val">{{ shortVal(v) }}</span>
               </div>
             </div>
             <div class="ov-card-actions">
