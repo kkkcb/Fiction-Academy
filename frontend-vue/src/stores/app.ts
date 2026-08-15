@@ -246,6 +246,7 @@ export const useAppStore = defineStore('app', () => {
       currentConversationId.value = conversation.id
       messages.value = []
       activeMode.value = 'free'
+      centerView.value = 'chat'
       currentPoint.value = null
       error.value = null
       return conversation
@@ -260,6 +261,7 @@ export const useAppStore = defineStore('app', () => {
     const token = ++_convToken
     currentConversationId.value = conversationId
     activeMode.value = 'free'
+    centerView.value = 'chat'  // 从写作视图切回对话
     currentPoint.value = null
     consultFlow.value = null
     streamingContent.value = ''
@@ -447,7 +449,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function openWriting() {
-    centerView.value = 'writing'
+    centerView.value = centerView.value === 'writing' ? 'chat' : 'writing'
   }
 
   function stopWritingChapter() {
@@ -748,6 +750,7 @@ export const useAppStore = defineStore('app', () => {
     const token = ++_convToken
     currentPoint.value = point
     activeMode.value = 'point'
+    centerView.value = 'chat'  // 从写作视图切回对话
     currentConversationId.value = null
     messages.value = []
     consultFlow.value = null
