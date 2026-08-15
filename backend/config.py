@@ -39,9 +39,10 @@ SYSTEM_PROMPT = """你是一位专业的小说创作助手。你的任务是协�
 3. 注意情节的因果关系和逻辑性
 4. 如果用户的设定存在矛盾，请及时指出"""
 
-LLM_TIMEOUT = int(os.getenv("FA_LLM_TIMEOUT", "120"))
+# 大生成（点位自动生成单次可产出上万 token）需要更宽的默认值，否则截断/超时
+LLM_TIMEOUT = int(os.getenv("FA_LLM_TIMEOUT", "600"))
 LLM_MAX_RETRIES = int(os.getenv("FA_LLM_MAX_RETRIES", "3"))
-LLM_MAX_TOKENS = int(os.getenv("FA_LLM_MAX_TOKENS", "8192"))
+LLM_MAX_TOKENS = int(os.getenv("FA_LLM_MAX_TOKENS", "16384"))
 CHAT_HISTORY_LIMIT = int(os.getenv("FA_CHAT_HISTORY_LIMIT", "40"))
 
 CORS_ORIGINS = [o.strip() for o in os.getenv(

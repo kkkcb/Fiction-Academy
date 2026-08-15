@@ -162,6 +162,8 @@ async def chat_text(messages: list[dict], system_prompt: str | None = None,
                 max_tokens=LLM_MAX_TOKENS,
             )
             _log_usage("chat_text", getattr(response, "usage", None))
+            if getattr(response.choices[0], "finish_reason", None) == "length":
+                logger.warning("[llm] chat_text output truncated by max_tokens (%d)", LLM_MAX_TOKENS)
             return response.choices[0].message.content or ""
         except _FATAL_ERRORS as e:
             raise LLMAuthError(str(e)) from e
@@ -201,6 +203,12 @@ async def chat_json(messages: list[dict], system_prompt: str | None = None,
             )
             _log_usage("chat_json", getattr(response, "usage", None))
             content = response.choices[0].message.content or ""
+            if getattr(response.choices[0], "finish_reason", None) == "length":
+                # 输出被 max_tokens 截断。JSON 模式下服务端可能自动补全括号，
+                # 产生"能解析但内容残缺"的结果——必须视为失败重试，否则残数据会被静默存库。
+                raise ValueError(
+                    f"output truncated by max_tokens ({LLM_MAX_TOKENS}); 内容不完整，拒绝采用"
+                )
             data = json.loads(_strip_code_fence(content))
             if response_schema is not None:
                 data = response_schema.model_validate(data).model_dump()
