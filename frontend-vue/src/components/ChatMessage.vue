@@ -3,6 +3,7 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import type { Message, WorkspaceItemType } from '../types'
 import { formatMd, formatContent, parseCommand, parseConsultRecord, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
+import { Trash2 } from 'lucide-vue-next'
 import ThinkingBlock from './ThinkingBlock.vue'
 import ConsultFlow from './ConsultFlow.vue'
 
@@ -59,6 +60,36 @@ onUnmounted(() => {
 
 function onRegenerate() { emit('regenerate', props.index) }
 
+// ===== 右键菜单：删除消息 =====
+const ctxMenu = ref<{ x: number; y: number } | null>(null)
+const ctxStyle = computed(() => {
+  const x = Math.min(ctxMenu.value?.x ?? 0, window.innerWidth - 150)
+  const y = Math.min(ctxMenu.value?.y ?? 0, window.innerHeight - 70)
+  return { left: x + 'px', top: y + 'px' }
+})
+function onContextMenu(e: MouseEvent) {
+  if (props.isStreaming || !m.value.id) return
+  e.preventDefault()
+  ctxMenu.value = { x: e.clientX, y: e.clientY }
+}
+function closeCtx() { ctxMenu.value = null }
+async function onDeleteMessage() {
+  closeCtx()
+  if (!confirm('删除这条消息？删除后不可恢复。')) return
+  await store.deleteMessage(m.value.id)
+}
+function onCtxEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && ctxMenu.value) closeCtx()
+}
+onMounted(() => {
+  window.addEventListener('click', closeCtx)
+  window.addEventListener('keydown', onCtxEsc)
+})
+onUnmounted(() => {
+  window.removeEventListener('click', closeCtx)
+  window.removeEventListener('keydown', onCtxEsc)
+})
+
 const showPinModal = ref(false)
 const pinType = ref<WorkspaceItemType>('story_core')
 const pinTitle = ref('')
@@ -102,7 +133,7 @@ async function doPin() {
 </script>
 
 <template>
-  <div v-if="cmd" class="msg user msg-command" :data-cmd="cmd.type">
+  <div v-if="cmd" class="msg user msg-command" :data-cmd="cmd.type" @contextmenu="onContextMenu">
     <div class="command-card">
       <div class="command-header">
         <span class="command-icon">{{ cmd.icon }}</span>
@@ -112,7 +143,7 @@ async function doPin() {
     </div>
   </div>
 
-  <div v-else-if="record" class="msg assistant msg-consult">
+  <div v-else-if="record" class="msg assistant msg-consult" @contextmenu="onContextMenu">
     <div class="msg-role">专家圆桌</div>
     <div class="msg-content consult-flow">
       <ConsultFlow :record="record" />
@@ -122,7 +153,7 @@ async function doPin() {
     </div>
   </div>
 
-  <div v-else class="msg" :class="m.role">
+  <div v-else class="msg" :class="m.role" @contextmenu="onContextMenu">
     <div v-if="!isUser" class="msg-role">
       {{ assistantRole }}
       <span v-if="timeText" class="msg-time">{{ timeText }}</span>
@@ -139,6 +170,14 @@ async function doPin() {
       <button class="btn btn-sm" title="沉淀到工作台" aria-label="将此回复沉淀到工作台" @click="onPin">沉淀</button>
       <button v-if="showRegenerate" class="btn btn-sm" title="重新生成" aria-label="重新生成回复" @click="onRegenerate">重新生成</button>
     </div>
+    <Teleport to="body">
+      <div v-if="ctxMenu" class="ctx-menu" :style="ctxStyle" @click.stop>
+        <button class="ctx-item ctx-danger" @click="onDeleteMessage">
+          <Trash2 :size="13" :stroke-width="1.75" />
+          删除消息
+        </button>
+      </div>
+    </Teleport>
     <Teleport to="body">
       <div v-if="showPinModal" class="modal-overlay show" @click.self="closePin">
         <div class="modal-card">

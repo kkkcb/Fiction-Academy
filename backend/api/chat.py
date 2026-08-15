@@ -69,6 +69,21 @@ async def get_messages(conversation_id: str):
     return rows
 
 
+@router.delete("/messages/{message_id}")
+async def delete_message(message_id: str):
+    db = await get_db()
+    row = await fetch_one(db, "SELECT id, conversation_id FROM messages WHERE id = ?", (message_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    await db.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+    await db.execute(
+        "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+        (row["conversation_id"],),
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 @router.put("/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, title: str):
     db = await get_db()

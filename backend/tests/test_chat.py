@@ -4,6 +4,9 @@ import json
 import pytest
 from httpx import AsyncClient
 
+from backend.database import get_db, fetch_all
+from backend.api.chat import MSG_ORDER
+
 
 @pytest.fixture
 def llm_calls(monkeypatch):
@@ -99,3 +102,25 @@ async def test_world_setting_point_uses_persona(client, project_id, llm_calls):
     await _stream_chat(client, cid, content="再讲讲", assistant_id="builtin-novel-writer")
     assert "小说创作助手" in llm_calls[-1]["system_prompt"]
     assert "世界建筑师" not in llm_calls[-1]["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_delete_message(client, project_id):
+    conv = await client.post(f"/api/projects/{project_id}/conversations", json={"title": "t"})
+    cid = conv.json()["id"]
+    db = await get_db()
+    from backend.services import repo
+    await repo.save_message(db, cid, "user", "要删的消息")
+    await repo.save_message(db, cid, "assistant", "保留的消息")
+    rows = await fetch_all(db, f"SELECT id, content FROM messages WHERE conversation_id = ? ORDER BY {MSG_ORDER}", (cid,))
+    target = next(r for r in rows if r["content"] == "要删的消息")
+
+    resp = await client.delete(f"/api/messages/{target['id']}")
+    assert resp.status_code == 200 and resp.json()["ok"] is True
+
+    rows2 = await fetch_all(db, "SELECT content FROM messages WHERE conversation_id = ?", (cid,))
+    assert [r["content"] for r in rows2] == ["保留的消息"]
+
+    # 删除不存在的消息 → 404
+    resp404 = await client.delete(f"/api/messages/{target['id']}")
+    assert resp404.status_code == 404

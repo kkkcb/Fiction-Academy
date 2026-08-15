@@ -296,6 +296,16 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function deleteMessage(messageId: ID) {
+    try {
+      await api.deleteMessage(messageId)
+      messages.value = messages.value.filter(m => m.id !== messageId)
+      error.value = null
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
   async function renameConversation(conversationId: ID, title: string) {
     try {
       await api.renameConversation(conversationId, title)

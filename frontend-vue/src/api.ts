@@ -130,6 +130,10 @@ export function getMessages(conversationId: ID): Promise<Message[]> {
   return request<Message[]>('GET', `/conversations/${conversationId}/messages`)
 }
 
+export function deleteMessage(messageId: ID): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('DELETE', `/messages/${messageId}`)
+}
+
 export function streamExpertConsult(
   projectId: ID,
   point: string,
