@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as api from '../api'
+import { propertyLabel } from '../utils/format'
 import type {
   Project,
   Conversation,
@@ -743,7 +744,7 @@ export const useAppStore = defineStore('app', () => {
         return r
       }
       const fieldsText = r.metadata && Object.keys(r.metadata).length > 0
-        ? '\n\n**结构化字段：**\n' + Object.entries(r.metadata).map(([k, v]) => `- **${k}**: ${v}`).join('\n')
+        ? '\n\n**结构化字段：**\n' + Object.entries(r.metadata).map(([k, v]) => `- **${propertyLabel(k)}**: ${v}`).join('\n')
         : ''
       messages.value = [...baseMessages, userMsg, { role: 'assistant', content: r.content + fieldsText }]
       streamingContent.value = ''

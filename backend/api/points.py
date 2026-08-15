@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from backend.database import get_db, fetch_all, fetch_one, transaction
 from backend.agents.base import chat_json, LLMError
-from backend.agents.guide_prompts import POINT_CONFIGS
+from backend.agents.guide_prompts import POINT_CONFIGS, FIELD_LABELS
 from backend.agents.guide import POINT_ORDER, POINT_LABELS
 from backend.agents.expert_panel import run_expert_panel
 from backend.services import repo
@@ -398,7 +398,7 @@ async def auto_generate_point(project_id: str, point: str, body: AutoGenerateBod
     if conversation_id:
         async with transaction():
             await repo.save_message(db, conversation_id, "user", f"/gen {body.idea}")
-            fields_lines = [f"- **{k}**: {v}" for k, v in fields_data.items() if v]
+            fields_lines = [f"- **{FIELD_LABELS.get(k, k)}**: {v}" for k, v in fields_data.items() if v]
             fields_block = "\n\n**结构化字段：**\n" + "\n".join(fields_lines) if fields_lines else ""
             await repo.save_message(db, conversation_id, "assistant", summary + fields_block)
             await db.execute(

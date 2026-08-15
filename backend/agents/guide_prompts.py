@@ -157,3 +157,24 @@ POINT_CONFIGS = {
         "complete_fields": OUTLINE_COMPLETE,
     },
 }
+
+
+def _short_labels(fields: dict) -> dict:
+    """取字段说明中括号前的主干作为简短中文标签。"""
+    return {k: v.split("（")[0].strip() for k, v in fields.items()}
+
+
+# 字段键 → 简短中文标签（点位字段 + 知识图谱/事件常用键），供消息渲染使用
+FIELD_LABELS: dict[str, str] = {
+    **_short_labels(STORY_CORE_FIELDS),
+    **_short_labels(WORLD_SETTING_FIELDS),
+    **_short_labels(CHARACTER_SETTING_FIELDS),
+    **_short_labels(OUTLINE_REVERSE_FIELDS),
+    **_short_labels(OUTLINE_FIELDS),
+    "subject": "主体",
+    "object": "客体",
+    "location": "地点",
+    "result": "结果",
+    "time": "时间",
+    "cause": "起因",
+}

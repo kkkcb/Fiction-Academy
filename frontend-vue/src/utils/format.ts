@@ -54,6 +54,33 @@ export const POINT_PERSONA_NAMES: Record<string, string> = {
   world_setting: '铸世者-炳',
 }
 
+/** 属性/字段键 → 中文释意（点位字段 + 知识图谱提取常见键），展示层一律只显示中文 */
+export const PROPERTY_LABELS: Record<string, string> = {
+  // 故事核
+  genre: '题材类型', trope: '故事模板', one_liner: '一句话核心', book_name: '书名', pitch: '文案',
+  // 世界观
+  power_system: '力量体系', power_limit: '硬限制', geography: '地理板块', social_class: '社会阶层',
+  factions: '多方势力', history: '历史背景', golden_finger: '金手指规则',
+  // 核心人物
+  name: '名称', role: '角色定位', core_desire: '核心欲望', inner_void: '内心黑洞',
+  red_lines: '红线', anchor_events: '行为锚点', speech_style: '语言体系', mbti: 'MBTI',
+  // 倒推大纲
+  endpoint_state: '终点状态', key_turning_points: '关键转折', start_state: '起点状态',
+  gap_analysis: '落差分析', foreshadows_needed: '预埋伏笔',
+  // 正向大纲
+  act1: '第一幕', act2_up: '第二幕上', act2_down: '第二幕下', act3: '第三幕',
+  ending: '结局方向', volumes: '分卷规划',
+  // 知识图谱/事件常用
+  subject: '主体', object: '客体', location: '地点', result: '结果', time: '时间', cause: '起因',
+  gender: '性别', age: '年龄', appearance: '外貌', personality: '性格', ability: '能力',
+  realm: '境界', status: '状态', description: '描述', level: '等级', origin: '来历',
+}
+
+/** 字段键显示为中文释意；已是中文的键原样返回，未收录的下划线转空格 */
+export function propertyLabel(key: string): string {
+  return PROPERTY_LABELS[key] || (/[\u4e00-\u9fff]/.test(key) ? key : key.replace(/_/g, ' '))
+}
+
 export function pointPersonaName(point: string | null | undefined): string {
   return point ? POINT_PERSONA_NAMES[point] || '' : ''
 }

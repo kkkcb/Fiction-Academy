@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import type { KgEntity, KgRelation, KgEntityType, KgKnowledgeLayer, ID } from '../types'
+import { propertyLabel } from '../utils/format'
 
 const store = useAppStore()
 const { currentProjectId, kgGraph, kgLoading } = storeToRefs(store)
@@ -356,7 +357,7 @@ const entityStats = computed(() => {
         <span class="kg-detail-val">{{ selectedEntity.summary }}</span>
       </div>
       <div v-for="[k, v] in propsList(selectedEntity)" :key="k" class="kg-detail-row">
-        <span class="kg-detail-key">{{ k }}</span>
+        <span class="kg-detail-key">{{ propertyLabel(k) }}</span>
         <span class="kg-detail-val">{{ v }}</span>
       </div>
       <div v-if="selectedRelations.length" class="kg-detail-relations">
