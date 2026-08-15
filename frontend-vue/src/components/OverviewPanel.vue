@@ -376,8 +376,11 @@ const lintScore = computed(() => {
   padding-left: 10px;
   border-left: 2px solid var(--border-subtle);
 }
+.ov-seg :deep(p) {
+  margin: 0;
+}
 .ov-seg + .ov-seg {
-  margin-top: 10px;
+  margin-top: 6px;
 }
 .ov-seg:first-child {
   color: var(--text-primary);
