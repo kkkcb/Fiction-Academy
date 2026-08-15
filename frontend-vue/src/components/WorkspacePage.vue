@@ -11,6 +11,7 @@ import MessageList from './MessageList.vue'
 import ChatInput from './ChatInput.vue'
 import IconMoon from './icons/IconMoon.vue'
 import IconSun from './icons/IconSun.vue'
+import { Archive, PanelRight } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -145,7 +146,7 @@ async function handleArchive() {
           aria-label="总结并存档"
           @click="handleArchive"
         >
-          <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M3 2h7l3 3v9H3V2zM10 2v3h3M5.5 8h5M5.5 10.5h5M5.5 12.5h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <Archive :size="14" :stroke-width="1.75" />
           {{ isArchiving ? '存档中...' : '总结并存档' }}
         </button>
         <span v-else-if="isPointMode && currentPointData?.status === 'done'" class="badge-done">已存档</span>
@@ -156,10 +157,7 @@ async function handleArchive() {
           :title="showRightPanel ? '收起设定面板（专注模式）' : '展开设定面板'"
           :aria-label="showRightPanel ? '收起设定面板' : '展开设定面板'"
         >
-          <svg viewBox="0 0 16 16" fill="none" width="16" height="16" aria-hidden="true">
-            <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
-            <path d="M10 3v10" stroke="currentColor" stroke-width="1.3"/>
-          </svg>
+          <PanelRight :size="16" :stroke-width="1.75" />
         </button>
         <button
           class="theme-toggle"

@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import type { WorkspaceItem, WorkspaceItemType, ID } from '../types'
 import { useAppStore } from '../stores/app'
 import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, formatMd, charCount, propertyLabel, type PointNavEntry } from '../utils/format'
+import { Plus } from 'lucide-vue-next'
 import KgGraphPanel from './KgGraphPanel.vue'
 import GoalPanel from './GoalPanel.vue'
 
@@ -172,7 +173,7 @@ const lintScore = computed(() => {
         </button>
       </div>
       <button v-if="viewMode === 'overview'" class="btn btn-sm" title="添加设定" aria-label="添加设定" @click="showCreate = true">
-        <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" width="12" height="12"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <Plus :size="12" :stroke-width="2" />
       </button>
     </div>
 

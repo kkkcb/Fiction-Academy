@@ -1,10 +1,7 @@
 <script setup lang="ts">
+import { Target } from 'lucide-vue-next'
 withDefaults(defineProps<{ size?: number }>(), { size: 24 })
 </script>
 <template>
-  <svg :width="size" :height="size" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="12" cy="12" r="10" />
-    <circle cx="12" cy="12" r="6" />
-    <circle cx="12" cy="12" r="2" />
-  </svg>
+  <Target :size="size" :stroke-width="1.75" />
 </template>

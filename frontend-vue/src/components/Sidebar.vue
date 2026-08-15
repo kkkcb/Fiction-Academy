@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/app'
 import { POINT_NAV, relativeTime } from '../utils/format'
 import IconCheck from './icons/IconCheck.vue'
 import IconTrash from './icons/IconTrash.vue'
+import { ChevronLeft, Plus } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -97,7 +98,7 @@ function onSelectAssistant(e: Event) {
   <aside class="sidebar-left">
     <div class="glass-header">
       <button class="btn btn-sm" title="返回项目列表" aria-label="返回项目列表" @click="goBack">
-        <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <ChevronLeft :size="14" :stroke-width="1.75" />
       </button>
       <span class="glass-title">{{ currentProject?.name || '未命名' }}</span>
     </div>
@@ -141,7 +142,7 @@ function onSelectAssistant(e: Event) {
       <div class="conv-header">
         <span>自由对话</span>
         <button class="btn btn-sm" title="新建对话" aria-label="新建对话" @click="handleNewConv">
-          <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" width="12" height="12"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <Plus :size="12" :stroke-width="2" />
         </button>
       </div>
 

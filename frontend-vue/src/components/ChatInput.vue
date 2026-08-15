@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import { useSlashCommands } from '../composables/useSlashCommands'
 import { useVoiceInput, isVoiceInputSupported } from '../composables/useVoiceInput'
+import { Mic, Square, ArrowUp } from 'lucide-vue-next'
 import IconTarget from './icons/IconTarget.vue'
 import IconBolt from './icons/IconBolt.vue'
 
@@ -201,10 +202,7 @@ function onSelectAssistant(e: Event) {
               :aria-pressed="voiceRecording"
               @click="toggleVoice"
             >
-              <svg viewBox="0 0 16 16" fill="none" width="15" height="15" aria-hidden="true">
-                <rect x="6" y="1.5" width="4" height="8" rx="2" stroke="currentColor" stroke-width="1.4"/>
-                <path d="M3.5 7.5a4.5 4.5 0 009 0M8 12v2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-              </svg>
+              <Mic :size="15" :stroke-width="1.75" aria-hidden="true" />
             </button>
 
             <button
@@ -214,7 +212,7 @@ function onSelectAssistant(e: Event) {
               aria-label="停止生成"
               @click="store.stopStreaming()"
             >
-              <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>
+              <Square :size="11" :stroke-width="0" fill="currentColor" aria-hidden="true" />
             </button>
             <button
               v-else
@@ -223,7 +221,7 @@ function onSelectAssistant(e: Event) {
               aria-label="发送消息"
               @click="doSend"
             >
-              <svg viewBox="0 0 16 16" fill="none" width="15" height="15" aria-hidden="true"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
+              <ArrowUp :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
           </div>
         </div>
