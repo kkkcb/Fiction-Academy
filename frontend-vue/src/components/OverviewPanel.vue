@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { WorkspaceItem, WorkspaceItemType, ID } from '../types'
 import { useAppStore } from '../stores/app'
-import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, formatMd, charCount, type PointNavEntry } from '../utils/format'
+import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, formatMd, charCount, propertyLabel, type PointNavEntry } from '../utils/format'
 import KgGraphPanel from './KgGraphPanel.vue'
 import GoalPanel from './GoalPanel.vue'
 
@@ -260,7 +260,7 @@ const lintScore = computed(() => {
             <div class="ov-card-content markdown-body" v-html="formatMd(item.content)"></div>
             <div v-if="metaFields(item).length > 0" class="ov-fields">
               <div v-for="[k, v] in metaFields(item)" :key="k" class="ov-field">
-                <span class="ov-field-key">{{ k }}</span>
+                <span class="ov-field-key">{{ propertyLabel(k) }}</span>
                 <span class="ov-field-val">{{ String(v).slice(0, 60) }}</span>
               </div>
             </div>
