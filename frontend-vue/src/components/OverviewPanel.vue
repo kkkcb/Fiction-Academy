@@ -47,6 +47,14 @@ function shortVal(v: unknown): string {
   return s.length > 80 ? s.slice(0, 80) + '…' : s
 }
 
+/** 正文分层：自带换行/标题/列表的按原结构分段；纯文本长段落按句读拆条 */
+function contentSegments(text: string | null | undefined): string[] {
+  const t = (text || '').trim()
+  if (!t) return []
+  if (/\n/.test(t)) return t.split(/\n{2,}/).map(s => s.trim()).filter(Boolean)
+  return t.split(/(?<=[。！？；])/).map(s => s.trim()).filter(Boolean)
+}
+
 const editingId = ref<ID | null>(null)
 const editingContent = ref<string>('')
 
@@ -262,7 +270,14 @@ const lintScore = computed(() => {
             </div>
           </template>
           <template v-else>
-            <div class="ov-card-content markdown-body" v-html="formatMd(item.content)"></div>
+            <div class="ov-card-content">
+              <div
+                v-for="(seg, i) in contentSegments(item.content)"
+                :key="i"
+                class="ov-seg markdown-body"
+                v-html="formatMd(seg, { cache: false })"
+              ></div>
+            </div>
             <div v-if="metaFields(item).length > 0" class="ov-fields">
               <div v-for="[k, v] in metaFields(item)" :key="k" class="ov-field">
                 <span class="ov-field-key">{{ propertyLabel(k) }}</span>
@@ -353,6 +368,20 @@ const lintScore = computed(() => {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.7;
+}
+.ov-seg {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.8;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-subtle);
+}
+.ov-seg + .ov-seg {
+  margin-top: 10px;
+}
+.ov-seg:first-child {
+  color: var(--text-primary);
+  border-left-color: var(--accent);
 }
 .ov-card-count {
   font-size: 10px;
