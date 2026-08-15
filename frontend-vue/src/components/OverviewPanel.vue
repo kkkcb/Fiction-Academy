@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import type { WorkspaceItem, WorkspaceItemType, ID } from '../types'
 import { useAppStore } from '../stores/app'
 import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, formatMd, charCount, propertyLabel, type PointNavEntry } from '../utils/format'
-import { Plus } from 'lucide-vue-next'
+import { Plus, Sparkles, BrainCircuit } from 'lucide-vue-next'
 import KgGraphPanel from './KgGraphPanel.vue'
 import GoalPanel from './GoalPanel.vue'
 
@@ -253,10 +253,10 @@ const lintScore = computed(() => {
 
       <div v-if="archivedPoints.length >= POINT_NAV.length" class="write-cta-card">
         <div class="write-cta-text">
-          <div class="write-cta-title">骨架已就绪 ✨</div>
+          <div class="write-cta-title"><Sparkles :size="13" :stroke-width="1.75" style="vertical-align:-2px" /> 骨架已就绪</div>
           <div class="write-cta-sub">五个点位全部定稿，可以开始正文创作了</div>
         </div>
-        <button class="btn btn-primary" aria-label="进入小说写作" @click="store.openWriting()">✍️ 去写作</button>
+        <button class="btn btn-primary" aria-label="进入小说写作" @click="store.openWriting()"><BrainCircuit :size="14" :stroke-width="1.75" /> 去写作</button>
       </div>
 
       <div v-if="archivedPoints.length > 0" class="overview-section">

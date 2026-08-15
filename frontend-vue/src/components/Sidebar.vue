@@ -6,7 +6,7 @@ import { useAppStore } from '../stores/app'
 import { POINT_NAV, relativeTime } from '../utils/format'
 import IconCheck from './icons/IconCheck.vue'
 import IconTrash from './icons/IconTrash.vue'
-import { ChevronLeft, Plus } from 'lucide-vue-next'
+import { ChevronLeft, Plus, BrainCircuit } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -128,7 +128,7 @@ function onSelectAssistant(e: Event) {
         aria-label="进入小说写作"
         @click="store.openWriting()"
       >
-        <span class="write-nav-icon">✍️</span>
+        <BrainCircuit class="write-nav-icon" :size="16" :stroke-width="1.75" />
         <div class="point-nav-text">
           <span class="point-nav-name">小说写作</span>
           <span class="point-nav-desc">{{ chapters.length ? `已写 ${chapters.length} 章` : '骨架就绪后开写' }}</span>

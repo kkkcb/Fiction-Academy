@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import type { WorkspaceItem } from '../types'
 import { POINT_NAV, STATUS_LABELS, relativeTime, formatMd } from '../utils/format'
+import { BrainCircuit, ClipboardList, Search, BookOpen } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -118,7 +119,7 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
       <div class="wh-actions">
         <template v-if="skeletonDone.ready">
           <button v-if="!isWritingChapter" class="btn btn-primary" aria-label="写下一章" @click="writeNext">
-            ✍️ 写第 {{ nextNumber }} 章
+            <BrainCircuit :size="14" :stroke-width="1.75" style="vertical-align:-2px" /> 写第 {{ nextNumber }} 章
           </button>
           <button v-else class="btn" aria-label="停止写作" @click="store.stopWritingChapter()">■ 停止</button>
           <button
@@ -155,7 +156,7 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
             <span>{{ p.label }}</span>
             <span class="ch-check-desc">{{ p.desc }}</span>
           </div>
-          <button v-if="skeletonDone.ready" class="btn btn-primary ch-cta" @click="writeNext">✍️ 开始写第 1 章</button>
+          <button v-if="skeletonDone.ready" class="btn btn-primary ch-cta" @click="writeNext"><BrainCircuit :size="14" :stroke-width="1.75" style="vertical-align:-2px" /> 开始写第 1 章</button>
         </div>
       </aside>
 
@@ -191,7 +192,7 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
 
           <div v-if="selectedPlan" class="plan-card">
             <button class="plan-toggle" @click="showPlan = !showPlan">
-              📋 本章章纲 <span class="plan-arrow" :class="{ open: showPlan }">▾</span>
+              <ClipboardList :size="13" :stroke-width="1.75" style="vertical-align:-2px" /> 本章章纲 <span class="plan-arrow" :class="{ open: showPlan }">▾</span>
             </button>
             <div v-show="showPlan" class="plan-body markdown-body" v-html="formatMd(selectedPlan.content || '')"></div>
           </div>
@@ -202,7 +203,8 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
 
           <div class="reader-actions">
             <button class="btn" :disabled="reviewing" @click="runReview">
-              {{ reviewing ? '审校中…' : '🔍 一致性审校' }}
+              <Search v-if="!reviewing" :size="13" :stroke-width="1.75" />
+              {{ reviewing ? '审校中…' : '一致性审校' }}
             </button>
           </div>
 
@@ -225,7 +227,7 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
         </template>
 
         <div v-else class="reader-empty">
-          <div class="reader-empty-icon">📖</div>
+          <BookOpen class="reader-empty-icon" :size="34" :stroke-width="1.5" />
           <div v-if="skeletonDone.ready">点上方「写第 {{ nextNumber }} 章」开始，或从左侧选择章节阅读</div>
           <div v-else>完成骨架后即可开始正文创作</div>
         </div>
