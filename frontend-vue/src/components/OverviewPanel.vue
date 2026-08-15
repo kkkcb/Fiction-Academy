@@ -47,12 +47,12 @@ function shortVal(v: unknown): string {
   return s.length > 80 ? s.slice(0, 80) + '…' : s
 }
 
-/** 正文分层：自带换行/标题/列表的按原结构分段；纯文本长段落按句读拆条 */
+/** 正文分层：自带换行/标题/列表的按原结构分段；纯文本长段落按句读拆条（收尾引号/括号跟随前句） */
 function contentSegments(text: string | null | undefined): string[] {
   const t = (text || '').trim()
   if (!t) return []
   if (/\n/.test(t)) return t.split(/\n{2,}/).map(s => s.trim()).filter(Boolean)
-  return t.split(/(?<=[。！？；])/).map(s => s.trim()).filter(Boolean)
+  return t.split(/(?<=[。！？；])(?!["”』」）)］】])|(?<=[。！？；]["”』」）)］】])/).map(s => s.trim()).filter(Boolean)
 }
 
 const editingId = ref<ID | null>(null)
