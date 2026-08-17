@@ -119,7 +119,7 @@ async def test_hot_discuss_paths(client, monkeypatch):
 
     monkeypatch.setattr(m.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(m, "chat_text", fake_chat_text)
-    r2 = await client.get("/api/hot/discuss", params={"url": "https://x.example/a", "title": "T", "source": "weibo"})
+    r2 = await client.get("/api/hot/discuss", params={"url": "https://x.example/a", "title": "T", "source": "douyin"})
     assert r2.json()["ok"] and "讨论" in r2.json()["summary"]
 
     # 3) JS 墙页面：提取不到正文 → 诚实失败
@@ -130,3 +130,42 @@ async def test_hot_discuss_paths(client, monkeypatch):
     FakeClient.get = _empty_get
     r3 = await client.get("/api/hot/discuss", params={"url": "https://x.example/b", "title": "T2", "source": "douyin"})
     assert not r3.json()["ok"] and r3.json()["reason"] == "js_or_login"
+
+
+@pytest.mark.asyncio
+async def test_weibo_discuss_layers(client, monkeypatch):
+    """微博讨论双层：无配置诚实失败带提示；有 Cookie 读真实微博。"""
+    import backend.config as cfg
+    from backend.api import materials as m
+
+    # 1) 无 Cookie 无 RSSHub → 诚实失败 + 解锁提示
+    monkeypatch.setattr(cfg, "WEIBO_COOKIE", "")
+    monkeypatch.setattr(cfg, "RSSHUB_BASE", "")
+    r1 = await client.get("/api/hot/discuss", params={"title": "测试热点", "source": "weibo"})
+    body = r1.json()
+    assert not body["ok"] and body["reason"] == "js_or_login" and "WEIBO_COOKIE" in body.get("hint", "")
+
+    # 2) 有 Cookie：打桩 m.weibo.cn API 返回微博
+    class FakeResp:
+        status_code = 200
+        text = ""
+        def raise_for_status(self): pass
+        def json(self):
+            return {"data": {"cards": [{"mblog": {"user": {"screen_name": "网友A"},
+                    "text": "这事儿主要争议在价格<em>透明</em>方面"}}]}}
+
+    class FakeClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None): return FakeResp()
+
+    async def fake_chat_text(messages, system_prompt=None, model="", temperature=0.5, **kw):
+        return "网友聚焦价格透明问题的争议，情绪偏批评。"
+
+    monkeypatch.setattr(cfg, "WEIBO_COOKIE", "SUB=test")
+    monkeypatch.setattr(m.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(m, "chat_text", fake_chat_text)
+    r2 = await client.get("/api/hot/discuss", params={"title": "测试热点", "source": "weibo"})
+    body2 = r2.json()
+    assert body2["ok"] and body2["kind"] == "weibo_posts" and "争议" in body2["summary"]

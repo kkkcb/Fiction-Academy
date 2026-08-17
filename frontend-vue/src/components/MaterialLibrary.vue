@@ -95,7 +95,7 @@ async function createFromMaterial(m: Material) {
 }
 
 // ===== 看讨论 =====
-const discussions = ref<Record<string, { loading: boolean; ok: boolean; summary: string; reason?: string }>>({})
+const discussions = ref<Record<string, { loading: boolean; ok: boolean; summary: string; reason?: string; hint?: string }>>({})
 
 function discussKey(item: { title: string }) { return item.title }
 
@@ -110,7 +110,7 @@ async function toggleDiscuss(item: HotItem) {
     const r = await api.getHotDiscuss(item.url || '', item.title, activeSource.value)
     discussions.value[key] = r.ok
       ? { loading: false, ok: true, summary: r.summary || '' }
-      : { loading: false, ok: false, summary: '', reason: r.reason }
+      : { loading: false, ok: false, summary: '', reason: r.reason, hint: r.hint }
   } catch (e) {
     discussions.value[key] = { loading: false, ok: false, summary: '', reason: 'error' }
   }
@@ -229,9 +229,10 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
               {{ discussions[item.title].summary }}
             </template>
             <template v-else>
-              {{ discussions[item.title].reason === 'js_or_login' || discussions[item.title].reason === 'fetch_failed'
-                ? '该平台内容需登录或动态加载，服务端读不到正文（知乎话题可直接看下方详情或概要）'
-                : '暂无可读的讨论内容' }}
+              {{ discussions[item.title].hint
+                || (discussions[item.title].reason === 'js_or_login' || discussions[item.title].reason === 'fetch_failed'
+                  ? '该平台内容需登录或动态加载，服务端读不到正文（知乎话题可直接看概要）'
+                  : '暂无可读的讨论内容') }}
             </template>
           </div>
           </div>

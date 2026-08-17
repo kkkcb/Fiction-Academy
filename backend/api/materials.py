@@ -277,6 +277,79 @@ def _extract_page_text(html: str) -> str:
     return _re.sub(r"\s+", " ", text).strip()[:3000]
 
 
+async def _weibo_discuss(keyword: str) -> dict:
+    """微博讨论读取（双层回退，模式源自 weibo-rss / RSSHub）：
+    1) 用户配置 WEIBO_COOKIE → m.weibo.cn 搜索 API 直读真实微博
+    2) 用户自托管 RSSHub → /weibo/keyword 路由
+    都没配 → 诚实失败（平台需登录）"""
+    import re as _re
+    from urllib.parse import quote as _quote
+    from backend.config import WEIBO_COOKIE, RSSHUB_BASE
+
+    posts: list[str] = []
+
+    if WEIBO_COOKIE:
+        try:
+            cid = _quote(f"100103type=1&q={keyword}")
+            async with httpx.AsyncClient(timeout=12, trust_env=False, headers={
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+                "Cookie": WEIBO_COOKIE,
+            }) as client:
+                r = await client.get(
+                    f"https://m.weibo.cn/api/container/getIndex?containerid={cid}&page_type=searchall",
+                    headers={"X-Requested-With": "XMLHttpRequest",
+                             "Referer": f"https://m.weibo.cn/search?containerid={cid}"},
+                )
+                data = r.json()
+            for card in data.get("data", {}).get("cards", []):
+                mb = card.get("mblog")
+                if mb:
+                    text = _re.sub(r"<[^>]+>", "", mb.get("text", "")).strip()
+                    if text:
+                        posts.append(f"@{mb.get('user', {}).get('screen_name', '')}：{text[:180]}")
+                if len(posts) >= 8:
+                    break
+        except Exception as e:
+            logger.info("[hot/discuss] weibo cookie api failed: %s", e)
+
+    if not posts and RSSHUB_BASE:
+        try:
+            async with httpx.AsyncClient(timeout=12, trust_env=False,
+                                         headers={"User-Agent": _UA}) as client:
+                r = await client.get(f"{RSSHUB_BASE}/weibo/keyword/{_quote(keyword)}")
+                r.raise_for_status()
+            import html as _html
+            for m in _re.findall(r"<description><!\[CDATA\[(.*?)\]\]></description>", r.text, _re.S)[:8]:
+                text = _re.sub(r"<[^>]+>", "", _html.unescape(m)).strip()
+                if text:
+                    posts.append(text[:180])
+        except Exception as e:
+            logger.info("[hot/discuss] rsshub failed: %s", e)
+
+    if not posts:
+        return {"ok": False, "reason": "js_or_login",
+                "hint": "可选配置：.env.local 中设置 WEIBO_COOKIE（浏览器登录 m.weibo.cn 后复制 Cookie）或自托管 RSSHub 后设置 RSSHUB_BASE，即可读取真实微博讨论"}
+
+    try:
+        prompt = (
+            f"热点标题：{keyword}\n\n以下是网友的相关微博：\n" + "\n".join(posts) +
+            "\n\n用2-3句话概括网友们主要在讨论什么（核心观点/争议/情绪）。只依据内容，不要编造。"
+        )
+        summary = await chat_text(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt="你是新闻编辑，擅长提炼网络讨论的核心。",
+            temperature=0.3,
+        )
+    except Exception as e:
+        logger.warning("[hot/discuss] weibo llm failed: %s", e)
+        return {"ok": False, "reason": "llm_failed"}
+
+    text = (summary or "").strip()[:500]
+    if not text:
+        return {"ok": False, "reason": "llm_failed"}
+    return {"ok": True, "kind": "weibo_posts", "summary": text}
+
+
 @router.get("/hot/discuss")
 async def hot_discuss(url: str = "", title: str = "", source: str = ""):
     """读取热点链接页面并概括讨论内容。
@@ -292,6 +365,9 @@ async def hot_discuss(url: str = "", title: str = "", source: str = ""):
                 if it["title"] == title and it.get("detail"):
                     return {"ok": True, "kind": "excerpt", "summary": it["detail"]}
         return {"ok": False, "reason": "no_content"}
+
+    if source == "weibo" and title:
+        return await _weibo_discuss(title)
 
     if not url:
         return {"ok": False, "reason": "no_url"}

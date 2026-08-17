@@ -155,9 +155,10 @@ export function getHotList(source: string): Promise<HotListResult> {
 
 export interface DiscussResult {
   ok: boolean
-  kind?: 'excerpt' | 'page'
+  kind?: 'excerpt' | 'page' | 'weibo_posts'
   summary?: string
   reason?: string
+  hint?: string
 }
 
 export function getHotDiscuss(url: string, title: string, source: string): Promise<DiscussResult> {
