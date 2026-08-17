@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS workspace_items (
     item_type TEXT NOT NULL CHECK(item_type IN (
         'story_core', 'world_setting', 'character_setting',
         'outline', 'outline_reverse', 'foreshadow',
-        'chapter_plan', 'chapter'
+        'chapter_plan', 'chapter',
+        'plot', 'theme', 'character', 'setting', 'summary'
     )),
     status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'finalized', 'locked')),
     title TEXT,
@@ -229,6 +230,42 @@ CREATE INDEX IF NOT EXISTS idx_workspace_project_sort
     (8, "add_projects_rules_text", "ALTER TABLE projects ADD COLUMN rules_text TEXT DEFAULT ''"),
     (9, "add_knowledge_graph_tables", KG_TABLES_SQL),
     (10, "add_goals_tables", GOALS_SQL),
+    (11, "expand_workspace_item_types", """
+CREATE TABLE workspace_items_v11 (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    item_type TEXT NOT NULL CHECK(item_type IN (
+        'story_core', 'world_setting', 'character_setting',
+        'outline', 'outline_reverse', 'foreshadow',
+        'chapter_plan', 'chapter',
+        'plot', 'theme', 'character', 'setting', 'summary'
+    )),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'finalized', 'locked')),
+    title TEXT,
+    subtitle TEXT DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    chapter_number INTEGER,
+    sort_order INTEGER DEFAULT 0,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(project_id, item_type, chapter_number)
+);
+INSERT INTO workspace_items_v11
+    (id, project_id, item_type, status, title, subtitle, content,
+     chapter_number, sort_order, metadata, created_at, updated_at)
+SELECT
+    id, project_id, item_type, status,
+    COALESCE(title, ''), COALESCE(subtitle, ''), COALESCE(content, ''),
+    chapter_number, COALESCE(sort_order, 0), COALESCE(metadata, '{}'), created_at, updated_at
+FROM workspace_items;
+DROP TABLE workspace_items;
+ALTER TABLE workspace_items_v11 RENAME TO workspace_items;
+CREATE INDEX IF NOT EXISTS idx_workspace_project_type_status
+    ON workspace_items(project_id, item_type, status);
+CREATE INDEX IF NOT EXISTS idx_workspace_project_sort
+    ON workspace_items(project_id, sort_order);
+"""),
 ]
 
 _db: aiosqlite.Connection | None = None
@@ -289,6 +326,14 @@ async def _run_migrations(db, fresh_install: bool):
         if version == 8 and await _has_column(db, "projects", "rules_text"):
             await _record_version(db, version)
             continue
+        if version == 11:
+            # 幂等：表定义已含新类型则跳过
+            cursor = await db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='workspace_items'")
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row and "'plot'" in (row[0] or ""):
+                await _record_version(db, version)
+                continue
         try:
             await db.executescript(f"BEGIN;{sql};COMMIT;")
         except Exception as e:

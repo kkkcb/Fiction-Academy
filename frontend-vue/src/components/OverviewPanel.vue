@@ -83,6 +83,10 @@ async function lock(item: WorkspaceItem) {
   await store.updateItemStatus(item.id, 'locked', currentProjectId.value!)
 }
 
+async function unlock(item: WorkspaceItem) {
+  await store.updateItemStatus(item.id, 'draft', currentProjectId.value!)
+}
+
 async function remove(item: WorkspaceItem) {
   if (confirm('确定删除这条设定？')) {
     await store.deleteWorkspaceItem(item.id, currentProjectId.value!)
@@ -298,6 +302,7 @@ const lintScore = computed(() => {
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`编辑${item.title}`" @click="startEdit(item)">编辑</button>
               <button v-if="item.status === 'draft'" class="btn-link" :aria-label="`审批${item.title}`" @click="approve(item)">通过</button>
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`锁定${item.title}`" @click="lock(item)">锁定</button>
+              <button v-else class="btn-link" aria-label="解锁" @click="unlock(item)">解锁</button>
               <button v-if="item.status !== 'locked'" class="btn-link danger" :aria-label="`删除${item.title}`" @click="remove(item)">删除</button>
             </div>
           </template>
@@ -324,6 +329,7 @@ const lintScore = computed(() => {
             <div class="ov-card-actions">
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`编辑${item.title}`" @click="startEdit(item)">编辑</button>
               <button v-if="item.status !== 'locked'" class="btn-link" :aria-label="`锁定${item.title}`" @click="lock(item)">锁定</button>
+              <button v-else class="btn-link" aria-label="解锁" @click="unlock(item)">解锁</button>
               <button v-if="item.status !== 'locked'" class="btn-link danger" :aria-label="`删除${item.title}`" @click="remove(item)">删除</button>
             </div>
           </template>

@@ -117,6 +117,26 @@ Fiction-Academy/
 | `/consult <想法>` | 点位对话 | 五位专家圆桌会诊 |
 | `/goal <目标>` | 任意 | Goal 模式：拆解任务逐步执行 |
 
+## 回归测试（每次更新代码后必须执行）
+
+任何代码改动推送前，依次跑完三层验证，全部通过才算完成：
+
+```bash
+# ① 单元/桩测（LLM 打桩，覆盖业务逻辑）
+python -m pytest backend/tests -q
+
+# ② 前端构建 + 类型检查（vue-tsc）
+cd frontend-vue && npm run build && cd ..
+
+# ③ 按钮级活体回归（需本地后端已启动；在一次性项目上逐一验证所有 UI 按钮的后端行为）
+python scripts/regression.py            # 快速模式（无 LLM 调用，约 3 秒）
+python scripts/regression.py --with-llm # 含真实聊天流冒烟
+```
+
+`scripts/regression.py` 覆盖：新建/重命名/删除项目、创作守则、五个点位进入、
+新建/重命名/删除对话、消息右键删除、添加/编辑/审批/锁定/解锁/删除设定、
+知识图谱实体增删、写作守卫（无骨架 409）、各类异常路径（404/409/422）。
+
 ## License
 
 MIT

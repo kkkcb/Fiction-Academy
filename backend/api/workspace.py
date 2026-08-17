@@ -35,6 +35,8 @@ VALID_ITEM_TYPES = {
     "story_core", "world_setting", "character_setting",
     "outline", "outline_reverse", "foreshadow",
     "chapter_plan", "chapter",
+    # 前端「添加设定」下拉的全部类型（与 TYPE_LABELS 对齐）
+    "plot", "theme", "character", "setting", "summary",
 }
 STATUS_TRANSITIONS = {
     "draft": {"finalized", "locked"},
@@ -147,6 +149,7 @@ class WorkspaceItemCreate(BaseModel):
         "story_core", "world_setting", "character_setting",
         "outline", "outline_reverse", "foreshadow",
         "chapter_plan", "chapter",
+        "plot", "theme", "character", "setting", "summary",
     ]
     title: str = ""
     subtitle: str = ""

@@ -84,8 +84,12 @@ async def delete_message(message_id: str):
     return {"ok": True}
 
 
+class ConversationTitleBody(BaseModel):
+    title: str
+
+
 @router.put("/conversations/{conversation_id}")
-async def update_conversation(conversation_id: str, title: str):
+async def update_conversation(conversation_id: str, body: ConversationTitleBody):
     db = await get_db()
     row = await fetch_one(db, "SELECT project_id FROM conversations WHERE id = ?", (conversation_id,))
     if not row:
@@ -93,10 +97,10 @@ async def update_conversation(conversation_id: str, title: str):
     async with transaction():
         await db.execute(
             "UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?",
-            (title, conversation_id),
+            (body.title, conversation_id),
         )
         await repo.touch_project(db, row["project_id"])
-    return {"id": conversation_id, "title": title}
+    return {"id": conversation_id, "title": body.title}
 
 
 @router.delete("/conversations/{conversation_id}")
