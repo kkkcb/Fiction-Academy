@@ -5,13 +5,13 @@ import type { ID, Project } from '../types'
 import { useAppStore } from '../stores/app'
 import { relativeTime } from '../utils/format'
 import MaterialLibrary from './MaterialLibrary.vue'
-import { Flame, BookOpen } from 'lucide-vue-next'
+import { Flame, BookOpen, PenLine, BrainCircuit } from 'lucide-vue-next'
 
 const store = useAppStore()
 const { projects } = storeToRefs(store)
 
 const showCreate = ref(false)
-const showMaterials = ref(false)
+const mainView = ref<'novel' | 'materials'>('novel')
 const creating = ref(false)
 const newName = ref('')
 const newGenre = ref('玄幻')
@@ -107,15 +107,44 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
 </script>
 
 <template>
-  <div class="projects-page">
+  <div class="projects-shell">
+    <!-- 左侧工具栏：小说创作 / 素材库 -->
+    <nav class="app-rail" aria-label="主导航">
+      <div class="app-rail-brand">
+        <BrainCircuit :size="20" :stroke-width="1.75" />
+      </div>
+      <button
+        class="rail-item"
+        :class="{ active: mainView === 'novel' }"
+        aria-label="小说创作"
+        title="小说创作"
+        @click="mainView = 'novel'"
+      >
+        <PenLine :size="18" :stroke-width="1.75" />
+        <span class="rail-label">小说创作</span>
+      </button>
+      <button
+        class="rail-item"
+        :class="{ active: mainView === 'materials' }"
+        aria-label="素材库"
+        title="热点素材库"
+        @click="mainView = 'materials'"
+      >
+        <Flame :size="18" :stroke-width="1.75" />
+        <span class="rail-label">素材库</span>
+      </button>
+    </nav>
+
+    <!-- 素材库页面 -->
+    <MaterialLibrary v-if="mainView === 'materials'" variant="page" class="rail-content" />
+
+    <!-- 小说创作（项目列表） -->
+    <div v-else class="projects-page rail-content">
     <div class="projects-header">
       <h1 class="projects-title">Fiction Academy</h1>
       <p class="projects-subtitle">沉浸式 AI 小说创作平台</p>
       <!-- 空列表时由空状态的 CTA 作为唯一入口，避免出现两个创建按钮 -->
       <div class="projects-header-actions">
-        <button class="btn" aria-label="打开热点素材库" title="抖音/微博/知乎热榜 · 收藏创作素材" @click="showMaterials = true">
-          <Flame :size="14" :stroke-width="1.75" /> 素材库
-        </button>
         <button v-if="!isEmpty" class="btn btn-primary" aria-label="新建项目" @click="showCreate = true">+ 新建项目</button>
       </div>
     </div>
@@ -188,7 +217,6 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
         </div>
       </div>
     </div>
-
-    <MaterialLibrary v-if="showMaterials" @close="showMaterials = false" />
+    </div>
   </div>
 </template>

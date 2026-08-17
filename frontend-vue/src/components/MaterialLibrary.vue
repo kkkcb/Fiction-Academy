@@ -7,8 +7,10 @@ import type { HotItem, Material } from '../api'
 import { relativeTime } from '../utils/format'
 import { Flame, Bookmark, BookmarkCheck, Trash2, RefreshCw, ExternalLink, PenLine, X } from 'lucide-vue-next'
 
+const props = withDefaults(defineProps<{ variant?: 'modal' | 'page' }>(), { variant: 'modal' })
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useAppStore()
+const isPage = computed(() => props.variant === 'page')
 
 const tab = ref<'hot' | 'saved'>('hot')
 const SOURCES = [
@@ -90,7 +92,7 @@ async function createFromMaterial(m: Material) {
 }
 
 function onEsc(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close')
+  if (e.key === 'Escape' && !isPage.value) emit('close')
 }
 onMounted(() => {
   window.addEventListener('keydown', onEsc)
@@ -101,11 +103,13 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
 </script>
 
 <template>
-  <div class="modal-overlay show" @click.self="emit('close')">
-    <div class="mat-library">
+  <div :class="isPage ? 'mat-page' : 'modal-overlay show'" @click.self="!isPage && emit('close')">
+    <div class="mat-library" :class="{ 'mat-page-card': isPage }">
       <div class="mat-head">
         <div class="mat-title"><Flame :size="16" :stroke-width="1.75" /> 热点素材库</div>
-        <button class="btn btn-sm" aria-label="关闭素材库" @click="emit('close')"><X :size="14" :stroke-width="1.75" /></button>
+        <button v-if="!isPage" class="btn btn-sm" aria-label="关闭素材库" @click="emit('close')">
+          <X :size="14" :stroke-width="1.75" />
+        </button>
       </div>
 
       <div class="mat-tabs">
@@ -117,7 +121,6 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
         </button>
       </div>
 
-      <!-- 热榜 -->
       <div v-if="tab === 'hot'" class="mat-body">
         <div class="mat-source-row">
           <button
@@ -338,4 +341,17 @@ a.mat-item-title:hover { color: var(--accent); }
 .mat-collect.done { color: var(--accent); }
 .mat-create { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; }
 .mat-del { flex-shrink: 0; color: #dc2626; }
+
+/* ===== 页面模式（首页左栏内容区） ===== */
+.mat-page {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+.mat-page-card {
+  flex: 1;
+  width: auto;
+  max-height: none;
+  box-shadow: none;
+}
 </style>
