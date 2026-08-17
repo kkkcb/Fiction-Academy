@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import type { WorkspaceItem, WorkspaceItemType, ID } from '../types'
 import { useAppStore } from '../stores/app'
 import { POINT_NAV, TYPE_LABELS, STATUS_LABELS, formatMd, charCount, propertyLabel, type PointNavEntry } from '../utils/format'
-import { Plus, Sparkles, BrainCircuit } from 'lucide-vue-next'
+import { Plus, Sparkles, BrainCircuit, CircleX, CircleAlert, CircleHelp, MapPin, CircleCheck } from 'lucide-vue-next'
 import KgGraphPanel from './KgGraphPanel.vue'
 import GoalPanel from './GoalPanel.vue'
 
@@ -159,7 +159,7 @@ function runConsistencyLint() {
   store.runLint(currentProjectId.value)
 }
 
-const LINT_ICON: Record<string, string> = { error: '🔴', warning: '🟡', info: '🔵' }
+const LINT_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAlert, info: CircleHelp }
 const lintScore = computed(() => {
   const s = lintResult.value?.consistency_score ?? 0
   return Math.round(s * 100)
@@ -239,18 +239,18 @@ const lintScore = computed(() => {
           <div class="lint-summary">{{ lintResult.summary }}</div>
           <div v-if="lintResult.issues.length" class="lint-issues">
             <div v-for="(issue, i) in lintResult.issues" :key="i" class="lint-issue" :class="issue.severity">
-              <span class="lint-issue-icon">{{ LINT_ICON[issue.severity] || '❓' }}</span>
+              <component :is="LINT_ICON[issue.severity] || CircleHelp" class="lint-issue-icon" :size="12" :stroke-width="1.75" />
               <div class="lint-issue-body">
                 <div class="lint-issue-desc">{{ issue.description }}</div>
                 <div class="lint-issue-meta">
                   <span class="lint-issue-cat">{{ issue.category }}</span>
-                  <span v-if="issue.location" class="lint-issue-loc">📍 {{ issue.location }}</span>
+                  <span v-if="issue.location" class="lint-issue-loc"><MapPin :size="9" :stroke-width="1.75" style="vertical-align:-1px" /> {{ issue.location }}</span>
                 </div>
                 <div v-if="issue.suggestion" class="lint-issue-sug">{{ issue.suggestion }}</div>
               </div>
             </div>
           </div>
-          <div v-else class="lint-no-issues">✅ 未发现一致性问题</div>
+          <div v-else class="lint-no-issues"><CircleCheck :size="12" :stroke-width="1.75" style="vertical-align:-2px" /> 未发现一致性问题</div>
         </template>
         <div v-else-if="!lintLoading" class="lint-hint">扫描工作台和知识图谱，自动检测矛盾、冲突和缺漏</div>
       </div>

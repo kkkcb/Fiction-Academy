@@ -48,7 +48,7 @@ watch(runtimeErrors, (errs) => {
   if (errs.length > 0) {
     const latest = errs[errs.length - 1]
     const short = latest.message.length > 80 ? latest.message.slice(0, 80) + '...' : latest.message
-    push('error', '⚠️ 渲染错误: ' + short, latest.stack)
+    push('error', '渲染错误: ' + short, latest.stack)
   }
 }, { deep: true })
 </script>

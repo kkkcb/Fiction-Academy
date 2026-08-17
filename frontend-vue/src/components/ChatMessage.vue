@@ -151,7 +151,7 @@ async function doPin() {
       <ConsultFlow :record="record" />
     </div>
     <div v-if="!isStreaming" class="msg-actions">
-      <button class="btn btn-sm" title="复制裁决" @click="onCopy">{{ copied ? '已复制 ✓' : '复制裁决' }}</button>
+      <button class="btn btn-sm" title="复制裁决" @click="onCopy">{{ copied ? '已复制' : '复制裁决' }}</button>
     </div>
   </div>
 
@@ -168,7 +168,7 @@ async function doPin() {
     </div>
     <div v-if="!isUser" class="msg-actions">
       <span v-if="showCount" class="msg-count">{{ countText }}</span>
-      <button class="btn btn-sm" title="复制" aria-label="复制消息" @click="onCopy">{{ copied ? '已复制 ✓' : '复制' }}</button>
+      <button class="btn btn-sm" title="复制" aria-label="复制消息" @click="onCopy">{{ copied ? '已复制' : '复制' }}</button>
       <button class="btn btn-sm" title="沉淀到工作台" aria-label="将此回复沉淀到工作台" @click="onPin">沉淀</button>
       <button v-if="showRegenerate" class="btn btn-sm" title="重新生成" aria-label="重新生成回复" @click="onRegenerate">重新生成</button>
     </div>

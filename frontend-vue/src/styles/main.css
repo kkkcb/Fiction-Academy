@@ -2380,3 +2380,11 @@ body {
   gap: 10px;
   margin-top: 6px;
 }
+
+/* ===== 骨架清单/审校图标配色 ===== */
+.ch-check-ok { color: #059669; }
+.ch-check-todo { color: var(--text-muted); }
+.goal-dim-icon { flex-shrink: 0; }
+.goal-step-icon { flex-shrink: 0; }
+.goal-section-title { display: flex; align-items: center; gap: 6px; }
+.lint-issue-icon { flex-shrink: 0; align-self: flex-start; margin-top: 2px; }

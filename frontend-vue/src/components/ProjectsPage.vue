@@ -5,7 +5,7 @@ import type { ID, Project } from '../types'
 import { useAppStore } from '../stores/app'
 import { relativeTime } from '../utils/format'
 import MaterialLibrary from './MaterialLibrary.vue'
-import { Flame } from 'lucide-vue-next'
+import { Flame, BookOpen } from 'lucide-vue-next'
 
 const store = useAppStore()
 const { projects } = storeToRefs(store)
@@ -121,7 +121,7 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
     </div>
 
     <div v-if="isEmpty" class="projects-empty">
-      <div class="projects-empty-icon">📖</div>
+      <BookOpen class="projects-empty-icon" :size="40" :stroke-width="1.25" />
       <div class="projects-empty-title">开始你的第一部作品</div>
       <div class="projects-empty-desc">创建项目后，AI 策划会通过五个点位引导你搭出完整故事骨架，再进入章节创作。</div>
       <button class="btn btn-primary" aria-label="新建项目" @click="showCreate = true">创建第一个项目</button>

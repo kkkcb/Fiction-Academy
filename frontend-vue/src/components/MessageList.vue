@@ -5,6 +5,7 @@ import ChatMessage from './ChatMessage.vue'
 import ConsultFlow from './ConsultFlow.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 import { formatMd, pointPersonaName } from '../utils/format'
+import { PenLine, MessageSquare } from 'lucide-vue-next'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { useAppStore } from '../stores/app'
 import IconWrite from './icons/IconWrite.vue'
@@ -60,7 +61,8 @@ onMounted(() => scrollToBottom(true))
 <template>
   <div ref="el" class="chat-messages" @scroll="onScroll">
     <div v-if="isEmpty" class="empty-state">
-      <div class="empty-icon">{{ isPoint ? '✍️' : '💬' }}</div>
+      <PenLine v-if="isPoint" class="empty-icon" :size="30" :stroke-width="1.5" />
+      <MessageSquare v-else class="empty-icon" :size="30" :stroke-width="1.5" />
       <div class="empty-text">{{ isPoint ? '开始设定' : '开始对话' }}</div>
       <div class="empty-hint">{{ isPoint ? 'AI 会引导你逐步确定核心设定' : '自由讨论任何想法' }}</div>
     </div>

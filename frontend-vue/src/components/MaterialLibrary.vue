@@ -5,7 +5,7 @@ import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import type { HotItem, Material } from '../api'
 import { relativeTime } from '../utils/format'
-import { Flame, Bookmark, BookmarkCheck, Trash2, RefreshCw, ExternalLink, PenLine } from 'lucide-vue-next'
+import { Flame, Bookmark, BookmarkCheck, Trash2, RefreshCw, ExternalLink, PenLine, X } from 'lucide-vue-next'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useAppStore()
@@ -105,7 +105,7 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
     <div class="mat-library">
       <div class="mat-head">
         <div class="mat-title"><Flame :size="16" :stroke-width="1.75" /> 热点素材库</div>
-        <button class="btn btn-sm" aria-label="关闭素材库" @click="emit('close')">✕</button>
+        <button class="btn btn-sm" aria-label="关闭素材库" @click="emit('close')"><X :size="14" :stroke-width="1.75" /></button>
       </div>
 
       <div class="mat-tabs">

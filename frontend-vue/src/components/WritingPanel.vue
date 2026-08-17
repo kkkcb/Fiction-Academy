@@ -5,7 +5,7 @@ import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import type { WorkspaceItem } from '../types'
 import { POINT_NAV, STATUS_LABELS, relativeTime, formatMd } from '../utils/format'
-import { BrainCircuit, ClipboardList, Search, BookOpen } from 'lucide-vue-next'
+import { BrainCircuit, ClipboardList, Search, BookOpen, CircleX, CircleAlert, CircleHelp, CircleCheck, Circle } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -102,7 +102,7 @@ function renderProse(text: string | null | undefined): string {
 function wordCountOf(item: WorkspaceItem): number {
   return (item.content || '').length
 }
-const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', info: '🔵', pass: '✅' }
+const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAlert, info: CircleHelp, pass: CircleCheck }
 </script>
 
 <template>
@@ -152,7 +152,8 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
         <div v-else class="ch-empty">
           <div class="ch-empty-title">开写前的准备清单</div>
           <div v-for="p in POINT_NAV" :key="p.key" class="ch-check" :class="{ ok: skeletonDone.done.has(p.key) }">
-            <span>{{ skeletonDone.done.has(p.key) ? '✅' : '⬜' }}</span>
+            <CircleCheck v-if="skeletonDone.done.has(p.key)" :size="13" :stroke-width="1.75" class="ch-check-ok" />
+            <Circle v-else :size="13" :stroke-width="1.75" class="ch-check-todo" />
             <span>{{ p.label }}</span>
             <span class="ch-check-desc">{{ p.desc }}</span>
           </div>
@@ -210,19 +211,19 @@ const REVIEW_ICON: Record<string, string> = { error: '🔴', warning: '🟡', in
 
           <div v-if="reviewResult" class="review-card">
             <div class="review-head">
-              <span class="review-overall" :class="reviewResult.overall">{{ REVIEW_ICON[reviewResult.overall] || '' }} {{ reviewResult.overall }}</span>
+              <span class="review-overall" :class="reviewResult.overall"><component :is="REVIEW_ICON[reviewResult.overall] || CircleHelp" :size="13" :stroke-width="1.75" /> {{ reviewResult.overall }}</span>
               <span class="review-summary">{{ reviewResult.summary }}</span>
             </div>
             <div v-if="reviewResult.issues?.length" class="review-issues">
               <div v-for="(iss, i) in reviewResult.issues" :key="i" class="review-issue" :class="iss.severity">
-                <span>{{ REVIEW_ICON[iss.severity] || '•' }}</span>
+                <component :is="REVIEW_ICON[iss.severity] || CircleHelp" :size="12" :stroke-width="1.75" />
                 <div>
                   <div class="ri-desc">{{ iss.description }}</div>
                   <div v-if="iss.suggestion" class="ri-sug">建议：{{ iss.suggestion }}</div>
                 </div>
               </div>
             </div>
-            <div v-else class="review-clean">未发现设定一致性问题</div>
+            <div v-else class="review-clean"><CircleCheck :size="12" :stroke-width="1.75" style="vertical-align:-2px" /> 未发现设定一致性问题</div>
           </div>
         </template>
 

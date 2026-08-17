@@ -3,12 +3,13 @@ import { ref, computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import type { GoalStep, GoalDimension } from '../types'
+import { CircleCheck, TriangleAlert, CircleX, CircleHelp, Square, Play, SkipForward, BarChart3, ClipboardList, Trophy, Target } from 'lucide-vue-next'
 
 const store = useAppStore()
 const { currentProjectId, goalState, goalLoading } = storeToRefs(store)
 
-const DIM_STATUS_ICON: Record<string, string> = { complete: '✅', partial: '⚠️', missing: '❌' }
-const STEP_ICON: Record<string, string> = { pending: '⬜', executing: '▶️', completed: '✅', skipped: '⏭️' }
+const DIM_STATUS_ICON: Record<string, unknown> = { complete: CircleCheck, partial: TriangleAlert, missing: CircleX }
+const STEP_ICON: Record<string, unknown> = { pending: Square, executing: Play, completed: CircleCheck, skipped: SkipForward }
 
 const hasGoal = computed(() => goalState.value !== null)
 const isPlanning = computed(() => goalState.value?.status === 'planning')
@@ -88,7 +89,7 @@ function addStep() {
 <template>
   <div class="goal-panel">
     <div v-if="!hasGoal" class="goal-empty">
-      <div class="goal-empty-icon">🎯</div>
+      <Target class="goal-empty-icon" :size="34" :stroke-width="1.25" />
       <p class="goal-empty-title">目标模式</p>
       <p class="goal-empty-hint">在输入框使用 <code>/goal 目标描述</code> 启动</p>
       <p class="goal-empty-hint">AI 将自主拆解任务、逐步执行、保存到工作台</p>
@@ -103,14 +104,14 @@ function addStep() {
       </div>
 
       <div v-if="isPlanning" class="goal-section">
-        <div class="goal-section-title">📊 完整性分析</div>
+        <div class="goal-section-title"><BarChart3 :size="13" :stroke-width="1.75" /> 完整性分析</div>
         <div class="goal-rate-bar">
           <div class="goal-rate-fill" :style="{ width: completionRate + '%' }"></div>
           <span class="goal-rate-text">{{ completionRate }}%</span>
         </div>
         <div class="goal-dims">
           <div v-for="dim in dimensions" :key="dim.name" class="goal-dim" :class="dim.status">
-            <span class="goal-dim-icon">{{ DIM_STATUS_ICON[dim.status] || '❓' }}</span>
+            <component :is="DIM_STATUS_ICON[dim.status] || CircleHelp" class="goal-dim-icon" :size="13" :stroke-width="1.75" />
             <span class="goal-dim-name">{{ dim.name }}</span>
             <span class="goal-dim-detail">{{ dim.detail }}</span>
           </div>
@@ -119,7 +120,7 @@ function addStep() {
 
       <div v-if="isPlanning" class="goal-section">
         <div class="goal-section-title">
-          📋 执行计划（{{ goalState!.steps.length }}步）
+          <ClipboardList :size="13" :stroke-width="1.75" style="vertical-align:-2px" /> 执行计划（{{ goalState!.steps.length }}步）
           <button class="btn-link" @click="startEdit">编辑</button>
         </div>
         <div class="goal-steps">
@@ -139,7 +140,7 @@ function addStep() {
       </div>
 
       <div v-if="isExecuting" class="goal-section">
-        <div class="goal-section-title">📊 执行进度</div>
+        <div class="goal-section-title"><BarChart3 :size="13" :stroke-width="1.75" /> 执行进度</div>
         <div class="goal-rate-bar">
           <div class="goal-rate-fill executing" :style="{ width: progressPercent + '%' }"></div>
           <span class="goal-rate-text">{{ progressPercent }}%</span>
@@ -151,7 +152,7 @@ function addStep() {
             class="goal-step-item"
             :class="step.status"
           >
-            <span class="goal-step-icon">{{ STEP_ICON[step.status] }}</span>
+            <component :is="STEP_ICON[step.status] || CircleHelp" class="goal-step-icon" :size="13" :stroke-width="1.75" />
             <div class="goal-step-body">
               <div class="goal-step-title">{{ step.title }}</div>
               <div v-if="step.status === 'completed' && step.result" class="goal-step-result markdown-body">
@@ -180,7 +181,7 @@ function addStep() {
       </div>
 
       <div v-if="isCompleted" class="goal-section">
-        <div class="goal-section-title">🎉 目标完成</div>
+        <div class="goal-section-title"><Trophy :size="13" :stroke-width="1.75" /> 目标完成</div>
         <div class="goal-summary markdown-body">{{ goalState!.summary }}</div>
         <div class="goal-plan-actions">
           <button class="btn btn-primary" @click="close">完成</button>
