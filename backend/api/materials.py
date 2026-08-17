@@ -68,18 +68,66 @@ async def get_hot(source: str = "douyin"):
     if source not in HOT_SOURCES:
         raise HTTPException(status_code=400, detail=f"不支持的热榜源：{source}")
     cached = _HOT_CACHE.get(source)
-    if cached and cached[0] > time.time():
+    fresh = cached and cached[0] > time.time()
+    if fresh:
         return {"source": source, "label": HOT_SOURCES[source], "cached": True, "items": cached[1]}
+
+    if cached:
+        # 有旧缓存：立即返回旧数据，后台刷新（切页秒开，不阻塞在外网请求上）
+        _spawn_refresh(source)
+        return {"source": source, "label": HOT_SOURCES[source], "cached": True,
+                "items": cached[1], "stale": True}
+
     try:
         items = await _fetch_hot(source)
     except Exception as e:
         logger.warning("[hot] fetch %s failed: %s", source, e)
-        if cached:
-            return {"source": source, "label": HOT_SOURCES[source], "cached": True,
-                    "items": cached[1], "stale": True}
         raise HTTPException(status_code=502, detail=f"热榜获取失败：{str(e)[:80]}")
     _HOT_CACHE[source] = (time.time() + _HOT_TTL, items)
     return {"source": source, "label": HOT_SOURCES[source], "cached": False, "items": items}
+
+
+_refreshing: set[str] = set()
+
+
+def _spawn_refresh(source: str) -> None:
+    if source in _refreshing:
+        return
+
+    async def _do():
+        try:
+            _refreshing.add(source)
+            items = await _fetch_hot(source)
+            _HOT_CACHE[source] = (time.time() + _HOT_TTL, items)
+            logger.info("[hot] refreshed %s (%d items)", source, len(items))
+        except Exception as e:
+            logger.warning("[hot] background refresh %s failed: %s", source, e)
+        finally:
+            _refreshing.discard(source)
+
+    import asyncio
+    task = asyncio.create_task(_do())
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
+
+
+_refresh_tasks: set = set()
+
+
+async def warm_hot_cache() -> None:
+    """启动预热：把三个源都拉一遍，用户首次切到素材库时秒开。
+    源之间错峰 8s——公共实例对连续请求限频（429）。"""
+    import asyncio
+    for i, source in enumerate(HOT_SOURCES):
+        if i:
+            await asyncio.sleep(8)
+        if not _HOT_CACHE.get(source):
+            try:
+                items = await _fetch_hot(source)
+                _HOT_CACHE[source] = (time.time() + _HOT_TTL, items)
+                logger.info("[hot] warmed %s (%d items)", source, len(items))
+            except Exception as e:
+                logger.warning("[hot] warm %s failed: %s", source, e)
 
 
 @router.post("/materials")

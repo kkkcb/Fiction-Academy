@@ -2438,3 +2438,6 @@ body {
   overflow-y: auto;
 }
 .rail-content.projects-page { height: 100vh; }
+
+/* ===== 素材库常驻宿主 ===== */
+.mat-host.rail-content { overflow: hidden; }

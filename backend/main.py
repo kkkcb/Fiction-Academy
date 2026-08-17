@@ -53,8 +53,21 @@ async def lifespan(app: FastAPI):
     await ensure_builtins()
     logger.info("Built-in assistants ensured")
 
+    # 热榜预热：启动即拉取（用户首次打开素材库秒开），之后每 10 分钟保温
+    import asyncio
+    from backend.api.materials import warm_hot_cache, _HOT_CACHE
+
+    async def _hot_keepalive():
+        while True:
+            _HOT_CACHE.clear()  # 让下一轮重新拉新
+            await warm_hot_cache()
+            await asyncio.sleep(600)
+
+    hot_task = asyncio.create_task(_hot_keepalive())
+
     yield
 
+    hot_task.cancel()
     logger.info("Shutting down...")
     await close_db()
     logger.info("Database closed")

@@ -36,6 +36,7 @@ async function loadHot() {
     const r = await api.getHotList(activeSource.value)
     hotLabel.value = r.label
     hotItems.value = r.items
+    lastHotAt = Date.now()
     if (r.stale) store.error = '热榜刷新失败，以下为缓存数据'
   } catch (e) {
     store.error = `热榜获取失败：${(e as Error).message}`
@@ -90,6 +91,17 @@ async function createFromMaterial(m: Material) {
     creatingId.value = null
   }
 }
+
+let lastHotAt = 0
+
+/** 切回本页时调用：热榜数据超过 5 分钟才静默重拉（期间照常显示旧数据） */
+function refreshIfStale() {
+  if (Date.now() - lastHotAt < 5 * 60_000) return
+  lastHotAt = Date.now()
+  loadHot()
+}
+
+defineExpose({ refreshIfStale })
 
 function onEsc(e: KeyboardEvent) {
   if (e.key === 'Escape' && !isPage.value) emit('close')

@@ -12,6 +12,12 @@ const { projects } = storeToRefs(store)
 
 const showCreate = ref(false)
 const mainView = ref<'novel' | 'materials'>('novel')
+const matRef = ref<InstanceType<typeof MaterialLibrary> | null>(null)
+
+// 切回素材库时：超过 5 分钟静默刷新热榜（平时秒切，无感）
+watch(mainView, v => {
+  if (v === 'materials') matRef.value?.refreshIfStale?.()
+})
 const creating = ref(false)
 const newName = ref('')
 const newGenre = ref('玄幻')
@@ -135,11 +141,11 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
       </button>
     </nav>
 
-    <!-- 素材库页面 -->
-    <MaterialLibrary v-if="mainView === 'materials'" variant="page" class="rail-content" />
+    <!-- 素材库页面（常驻不卸载，切换即时渲染） -->
+    <MaterialLibrary v-show="mainView === 'materials'" ref="matRef" variant="page" class="rail-content mat-host" />
 
     <!-- 小说创作（项目列表） -->
-    <div v-else class="projects-page rail-content">
+    <div v-if="mainView === 'novel'" class="projects-page rail-content">
     <div class="projects-header">
       <h1 class="projects-title">Fiction Academy</h1>
       <p class="projects-subtitle">沉浸式 AI 小说创作平台</p>
