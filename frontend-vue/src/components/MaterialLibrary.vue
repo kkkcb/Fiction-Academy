@@ -38,6 +38,7 @@ async function loadHot() {
     hotItems.value = r.items
     lastHotAt = Date.now()
     if (r.stale) store.error = '热榜刷新失败，以下为缓存数据'
+    scheduleSummaryRefetch(r.items)
   } catch (e) {
     store.error = `热榜获取失败：${(e as Error).message}`
   } finally {
@@ -93,6 +94,22 @@ async function createFromMaterial(m: Material) {
 }
 
 let lastHotAt = 0
+let summaryTimer: ReturnType<typeof setTimeout> | null = null
+let summaryRetries = 0
+
+/** 概要由 AI 在后台批量生成：列表尚无概要时，25s 后静默补拉（最多 3 次） */
+function scheduleSummaryRefetch(items: { summary?: string }[]) {
+  if (summaryTimer) clearTimeout(summaryTimer)
+  const withSummary = items.filter(i => i.summary).length
+  if (withSummary >= Math.min(5, items.length) || summaryRetries >= 3) {
+    summaryRetries = 0
+    return
+  }
+  summaryRetries += 1
+  summaryTimer = setTimeout(() => {
+    if (tab.value === 'hot') loadHot()
+  }, 25_000)
+}
 
 /** 切回本页时调用：热榜数据超过 5 分钟才静默重拉（期间照常显示旧数据） */
 function refreshIfStale() {
@@ -151,11 +168,14 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
           <div v-for="(item, i) in hotItems" :key="i" class="mat-item">
             <span class="mat-rank" :class="{ top: i < 3 }">{{ i + 1 }}</span>
             <div class="mat-item-main">
-              <a v-if="item.url" :href="item.url" target="_blank" class="mat-item-title" rel="noopener noreferrer">
-                {{ item.title }} <ExternalLink :size="10" :stroke-width="1.75" class="mat-ext" />
-              </a>
-              <span v-else class="mat-item-title">{{ item.title }}</span>
-              <span v-if="item.hot" class="mat-hot">{{ item.hot }}</span>
+              <div class="mat-line1">
+                <a v-if="item.url" :href="item.url" target="_blank" class="mat-item-title" rel="noopener noreferrer">
+                  {{ item.title }} <ExternalLink :size="10" :stroke-width="1.75" class="mat-ext" />
+                </a>
+                <span v-else class="mat-item-title">{{ item.title }}</span>
+                <span v-if="item.hot" class="mat-hot">{{ item.hot }}</span>
+              </div>
+              <div v-if="item.summary" class="mat-summary">{{ item.summary }}</div>
             </div>
             <button
               class="btn btn-sm mat-collect"
@@ -330,8 +350,21 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mat-line1 {
+  display: flex;
   align-items: baseline;
   gap: 8px;
+  min-width: 0;
+}
+.mat-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mat-item-title {
   font-size: 13px;

@@ -138,6 +138,7 @@ export interface HotItem {
   title: string
   hot: string
   url: string
+  summary?: string
 }
 
 export interface HotListResult {

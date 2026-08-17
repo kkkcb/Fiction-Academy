@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from backend.config import HOT_API_BASE
 from backend.database import get_db, fetch_all, fetch_one
+from backend.agents.base import chat_json
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -39,7 +40,7 @@ class MaterialCreate(BaseModel):
 
 
 async def _fetch_hot(source: str) -> list[dict]:
-    """拉取单个热榜源并归一化为 [{title, hot, url}]。"""
+    """拉取单个热榜源并归一化为 [{title, hot, url, summary}]。"""
     async with httpx.AsyncClient(timeout=15, trust_env=False,
                                  headers={"User-Agent": _UA}) as client:
         r = await client.get(f"{HOT_API_BASE}/{source}")
@@ -55,10 +56,13 @@ async def _fetch_hot(source: str) -> list[dict]:
             hot = f"{int(hot) / 10000:.0f}万热度" if isinstance(hot, (int, float)) else str(hot)
         except (ValueError, TypeError):
             hot = str(hot)
+        # 知乎条目自带话题详情，直接作为概要
+        summary = (it.get("detail") or "").strip()[:80]
         items.append({
             "title": title,
             "hot": hot,
-            "url": it.get("link") or it.get("detail") or "",
+            "url": it.get("link") or "",
+            "summary": summary,
         })
     return items[:50]
 
@@ -83,7 +87,7 @@ async def get_hot(source: str = "douyin"):
     except Exception as e:
         logger.warning("[hot] fetch %s failed: %s", source, e)
         raise HTTPException(status_code=502, detail=f"热榜获取失败：{str(e)[:80]}")
-    _HOT_CACHE[source] = (time.time() + _HOT_TTL, items)
+    _store_hot(source, items)
     return {"source": source, "label": HOT_SOURCES[source], "cached": False, "items": items}
 
 
@@ -98,7 +102,7 @@ def _spawn_refresh(source: str) -> None:
         try:
             _refreshing.add(source)
             items = await _fetch_hot(source)
-            _HOT_CACHE[source] = (time.time() + _HOT_TTL, items)
+            _store_hot(source, items)
             logger.info("[hot] refreshed %s (%d items)", source, len(items))
         except Exception as e:
             logger.warning("[hot] background refresh %s failed: %s", source, e)
@@ -114,6 +118,51 @@ def _spawn_refresh(source: str) -> None:
 _refresh_tasks: set = set()
 
 
+SUMMARY_PROMPT = """你是新闻编辑。给每条热点标题写一句话概要（30字内，说清"谁/发生了什么"）。
+规则：只依据标题本身的信息概括主旨，禁止编造标题中没有的数字、人名、机构；信息不足就返回空字符串。
+输出 JSON：{"summaries": {"标题原文": "概要", ...}}，输入列表里的每条标题都要有对应键。"""
+
+
+async def _summarize_source(source: str, items: list[dict]) -> None:
+    """后台为缺概要的条目批量生成一句话摘要（LLM，单源并发=1）。"""
+    key = f"summ:{source}"
+    if key in _refreshing:
+        return
+    _refreshing.add(key)
+    try:
+        targets = [it for it in items[:20] if not it.get("summary")]
+        if not targets:
+            return
+        titles = [it["title"] for it in targets]
+        result = await chat_json(
+            messages=[{"role": "user", "content": "标题列表：" + json.dumps(titles, ensure_ascii=False)}],
+            system_prompt=SUMMARY_PROMPT,
+            temperature=0.3,
+        )
+        mapping = result.get("summaries") or {}
+        if not isinstance(mapping, dict):
+            return
+        by_title = {it["title"]: it for it in items}
+        for title, summ in mapping.items():
+            it = by_title.get(title)
+            if it and summ and str(summ).strip():
+                it["summary"] = str(summ).strip()[:60]
+        logger.info("[hot] summarized %s (%d/%d)", source, len(mapping), len(titles))
+    except Exception as e:
+        logger.warning("[hot] summarize %s failed: %s", source, e)
+    finally:
+        _refreshing.discard(key)
+
+
+def _store_hot(source: str, items: list[dict]) -> None:
+    """写入缓存并触发后台摘要生成。"""
+    _HOT_CACHE[source] = (time.time() + _HOT_TTL, items)
+    import asyncio
+    task = asyncio.create_task(_summarize_source(source, items))
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
+
+
 async def warm_hot_cache() -> None:
     """启动预热：把三个源都拉一遍，用户首次切到素材库时秒开。
     源之间错峰 8s——公共实例对连续请求限频（429）。"""
@@ -124,7 +173,7 @@ async def warm_hot_cache() -> None:
         if not _HOT_CACHE.get(source):
             try:
                 items = await _fetch_hot(source)
-                _HOT_CACHE[source] = (time.time() + _HOT_TTL, items)
+                _store_hot(source, items)
                 logger.info("[hot] warmed %s (%d items)", source, len(items))
             except Exception as e:
                 logger.warning("[hot] warm %s failed: %s", source, e)
