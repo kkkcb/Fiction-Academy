@@ -51,5 +51,9 @@ CORS_ORIGINS = [o.strip() for o in os.getenv(
     "http://localhost:5173,http://127.0.0.1:5173",
 ).split(",") if o.strip()]
 
+# 热榜数据源（60s API，github.com/vikiboss/60s）。公共实例有每日限额，
+# 建议生产自托管后用 HOT_API_BASE 覆盖（如 http://127.0.0.1:8787/v2）。
+HOT_API_BASE = os.getenv("HOT_API_BASE", "https://60s.viki.moe/v2")
+
 if not LLM_API_KEY:
     logger.warning("LLM_API_KEY 未配置！聊天功能将无法使用。请设置环境变量 LLM_API_KEY。")

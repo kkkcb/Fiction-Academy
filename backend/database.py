@@ -173,6 +173,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS materials (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    url TEXT DEFAULT '',
+    hot TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(title, source)
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_project_type_status ON workspace_items(project_id, item_type, status);
@@ -265,6 +276,18 @@ CREATE INDEX IF NOT EXISTS idx_workspace_project_type_status
     ON workspace_items(project_id, item_type, status);
 CREATE INDEX IF NOT EXISTS idx_workspace_project_sort
     ON workspace_items(project_id, sort_order);
+"""),
+    (12, "add_materials_table", """
+CREATE TABLE IF NOT EXISTS materials (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    url TEXT DEFAULT '',
+    hot TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(title, source)
+);
 """),
 ]
 

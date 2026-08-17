@@ -134,6 +134,46 @@ export function deleteMessage(messageId: ID): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>('DELETE', `/messages/${messageId}`)
 }
 
+export interface HotItem {
+  title: string
+  hot: string
+  url: string
+}
+
+export interface HotListResult {
+  source: string
+  label: string
+  cached: boolean
+  stale?: boolean
+  items: HotItem[]
+}
+
+export function getHotList(source: string): Promise<HotListResult> {
+  return request<HotListResult>('GET', `/hot?source=${encodeURIComponent(source)}`)
+}
+
+export interface Material {
+  id: ID
+  title: string
+  source?: string
+  url?: string
+  hot?: string
+  note?: string
+  created_at?: string
+}
+
+export function listMaterials(): Promise<Material[]> {
+  return request<Material[]>('GET', '/materials')
+}
+
+export function createMaterial(data: Partial<Material>): Promise<Material> {
+  return request<Material>('POST', '/materials', data)
+}
+
+export function deleteMaterial(id: ID): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('DELETE', `/materials/${id}`)
+}
+
 export function streamExpertConsult(
   projectId: ID,
   point: string,

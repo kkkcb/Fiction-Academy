@@ -4,11 +4,14 @@ import { storeToRefs } from 'pinia'
 import type { ID, Project } from '../types'
 import { useAppStore } from '../stores/app'
 import { relativeTime } from '../utils/format'
+import MaterialLibrary from './MaterialLibrary.vue'
+import { Flame } from 'lucide-vue-next'
 
 const store = useAppStore()
 const { projects } = storeToRefs(store)
 
 const showCreate = ref(false)
+const showMaterials = ref(false)
 const creating = ref(false)
 const newName = ref('')
 const newGenre = ref('玄幻')
@@ -109,7 +112,12 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
       <h1 class="projects-title">Fiction Academy</h1>
       <p class="projects-subtitle">沉浸式 AI 小说创作平台</p>
       <!-- 空列表时由空状态的 CTA 作为唯一入口，避免出现两个创建按钮 -->
-      <button v-if="!isEmpty" class="btn btn-primary" aria-label="新建项目" @click="showCreate = true">+ 新建项目</button>
+      <div class="projects-header-actions">
+        <button class="btn" aria-label="打开热点素材库" title="抖音/微博/知乎热榜 · 收藏创作素材" @click="showMaterials = true">
+          <Flame :size="14" :stroke-width="1.75" /> 素材库
+        </button>
+        <button v-if="!isEmpty" class="btn btn-primary" aria-label="新建项目" @click="showCreate = true">+ 新建项目</button>
+      </div>
     </div>
 
     <div v-if="isEmpty" class="projects-empty">
@@ -180,5 +188,7 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
         </div>
       </div>
     </div>
+
+    <MaterialLibrary v-if="showMaterials" @close="showMaterials = false" />
   </div>
 </template>

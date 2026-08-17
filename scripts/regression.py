@@ -103,6 +103,17 @@ def main():
     r = c.post(f"{BASE}/api/projects/{pid}/points/bad_point/ensure-conversation")
     check("非法点位名被拒（400/422）", r.status_code in (400, 422))
 
+    print("\n== 热点素材库 ==")
+    r = c.post(f"{BASE}/api/materials", json={"title": "回归热点", "source": "weibo", "hot": "10万热度"})
+    check("收藏素材", r.status_code == 200)
+    mat_id = r.json()["id"] if r.status_code == 200 else None
+    check("重复收藏被拒（409）",
+          c.post(f"{BASE}/api/materials", json={"title": "回归热点", "source": "weibo"}).status_code == 409)
+    check("素材列表", any(m["id"] == mat_id for m in c.get(f"{BASE}/api/materials").json()) if mat_id else False)
+    if mat_id:
+        check("删除素材", c.delete(f"{BASE}/api/materials/{mat_id}").status_code == 200)
+    check("非法热榜源被拒（400）", c.get(f"{BASE}/api/hot?source=bad").status_code == 400)
+
     if with_llm:
         print("\n== LLM 冒烟（真实调用） ==")
         try:
