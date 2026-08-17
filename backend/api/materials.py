@@ -23,6 +23,7 @@ HOT_SOURCES = {
     "douyin": "抖音热点",
     "weibo": "微博热搜",
     "zhihu": "知乎热榜",
+    "news60": "今日要闻",  # 60秒读懂世界：每条自带完整新闻内容
 }
 
 # 热榜缓存：源 → (过期时间戳, 数据)。TTL 10 分钟，规避公共实例限频（429）。
@@ -43,9 +44,21 @@ async def _fetch_hot(source: str) -> list[dict]:
     """拉取单个热榜源并归一化为 [{title, hot, url, summary}]。"""
     async with httpx.AsyncClient(timeout=15, trust_env=False,
                                  headers={"User-Agent": _UA}) as client:
-        r = await client.get(f"{HOT_API_BASE}/{source}")
+        r = await client.get(f"{HOT_API_BASE}/{'60s' if source == 'news60' else source}")
         r.raise_for_status()
         body = r.json()
+
+    if source == "news60":
+        # 60秒读懂世界：news 列表每条就是一句完整新闻
+        data = body.get("data") or {}
+        news = data.get("news") or []
+        return [{
+            "title": (n if isinstance(n, str) else str(n.get("title") or ""))[:80],
+            "hot": "",
+            "url": data.get("link") or "",
+            "summary": "",
+        } for n in news if n][:20]
+
     items = []
     for it in body.get("data") or []:
         title = (it.get("title") or "").strip()
@@ -118,9 +131,28 @@ def _spawn_refresh(source: str) -> None:
 _refresh_tasks: set = set()
 
 
-SUMMARY_PROMPT = """你是新闻编辑。给每条热点标题写一句话概要（30字内，说清"谁/发生了什么"）。
-规则：只依据标题本身的信息概括主旨，禁止编造标题中没有的数字、人名、机构；信息不足就返回空字符串。
-输出 JSON：{"summaries": {"标题原文": "概要", ...}}，输入列表里的每条标题都要有对应键。"""
+def _is_paraphrase(title: str, summary: str) -> bool:
+    """复读判定：摘要的字符二元组几乎全部来自标题（≥0.8）→ 无增量信息。"""
+    import re as _re
+    strip = r"[\s，。！？、：；·,!?::~“”‘’]"
+    t = _re.sub(strip, "", title)
+    s = _re.sub(strip, "", summary)
+    if len(s) < 6:
+        return True
+    if s in t:
+        return True
+    t_bigrams = {t[i:i + 2] for i in range(len(t) - 1)}
+    s_bigrams = {s[i:i + 2] for i in range(len(s) - 1)}
+    if not s_bigrams:
+        return True
+    return len(s_bigrams & t_bigrams) / len(s_bigrams) >= 0.65
+
+
+SUMMARY_PROMPT = """你是资深新闻编辑。给每条热点标题写一句"补充信息"（35字内），目标是让不了解的人看懂这是什么事：
+- 优先补充标题之外的背景：涉事主体是谁（公司/人物的身份和知名度）、事件的语境或意义
+- 可以使用你确信的常识性背景（如"宇树科技"是机器人独角兽）；禁止编造标题与常识都无法支撑的具体数字、日期、人名
+- 如果除了复述标题外没有任何可补充的，返回空字符串——宁缺毋滥，不要复读标题
+输出 JSON：{"summaries": {"标题原文": "补充信息或空串", ...}}，输入列表里的每条标题都要有对应键。"""
 
 
 async def _summarize_source(source: str, items: list[dict]) -> None:
@@ -145,8 +177,9 @@ async def _summarize_source(source: str, items: list[dict]) -> None:
         by_title = {it["title"]: it for it in items}
         for title, summ in mapping.items():
             it = by_title.get(title)
-            if it and summ and str(summ).strip():
-                it["summary"] = str(summ).strip()[:60]
+            text = str(summ or "").strip()
+            if it and text and not _is_paraphrase(title, text):
+                it["summary"] = text[:60]
         logger.info("[hot] summarized %s (%d/%d)", source, len(mapping), len(titles))
     except Exception as e:
         logger.warning("[hot] summarize %s failed: %s", source, e)

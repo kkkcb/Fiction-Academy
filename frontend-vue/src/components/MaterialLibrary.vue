@@ -17,6 +17,7 @@ const SOURCES = [
   { key: 'douyin', label: '抖音热点' },
   { key: 'weibo', label: '微博热搜' },
   { key: 'zhihu', label: '知乎热榜' },
+  { key: 'news60', label: '今日要闻' },
 ]
 const activeSource = ref('douyin')
 const hotLoading = ref(false)

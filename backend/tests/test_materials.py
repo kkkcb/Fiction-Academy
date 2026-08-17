@@ -79,3 +79,11 @@ async def test_fetch_hot_seeds_zhihu_detail(client, monkeypatch):
     items = await mat._fetch_hot("zhihu")
     assert items[0]["summary"].startswith("关于某事")
     assert len(items[0]["summary"]) <= 80
+
+
+def test_paraphrase_detector():
+    """复读型摘要被识别，真增量信息放行。"""
+    assert mat._is_paraphrase("宇树科技8月19日上市", "宇树科技将于8月19日上市")
+    assert mat._is_paraphrase("未来5年我国能源蓝图划重点", "未来5年我国能源发展蓝图划定重点")
+    assert not mat._is_paraphrase("宇树科技8月19日上市", "机器人独角兽宇树科技启动A股IPO")
+    assert not mat._is_paraphrase("大批AI博主停更了", "AI内容创作竞争加剧，流量收益下滑引发停更潮")
