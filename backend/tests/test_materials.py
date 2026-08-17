@@ -1,4 +1,6 @@
 """热点素材库测试：CRUD + 去重 + 热榜归一化（外部 API 打桩）。"""
+import time
+
 import pytest
 
 from backend.api import materials as mat
@@ -87,3 +89,44 @@ def test_paraphrase_detector():
     assert mat._is_paraphrase("未来5年我国能源蓝图划重点", "未来5年我国能源发展蓝图划定重点")
     assert not mat._is_paraphrase("宇树科技8月19日上市", "机器人独角兽宇树科技启动A股IPO")
     assert not mat._is_paraphrase("大批AI博主停更了", "AI内容创作竞争加剧，流量收益下滑引发停更潮")
+
+
+@pytest.mark.asyncio
+async def test_hot_discuss_paths(client, monkeypatch):
+    """看讨论三条路径：知乎本地详情 / 可读网页 LLM 概括 / JS墙诚实失败。"""
+    from backend.api import materials as m
+
+    # 1) 知乎：命中本地缓存 detail 直出（无 LLM/网络）
+    m._HOT_CACHE["zhihu"] = (time.time() + 600, [
+        {"title": "知乎热题", "hot": "1万", "url": "u", "summary": "s", "detail": "完整的讨论摘录内容"}])
+    r = await client.get("/api/hot/discuss", params={"title": "知乎热题", "source": "zhihu"})
+    assert r.status_code == 200 and r.json()["ok"] and "讨论摘录" in r.json()["summary"]
+
+    # 2) 可读网页：meta 摘要提取 + LLM 打桩
+    class FakeResp:
+        status_code = 200
+        text = '<html><meta name="description" content="关于该热点的完整报道正文，包含事件经过、多方观点交锋与网友热议的讨论内容详述，信息量充足"></html>'
+        def raise_for_status(self): pass
+
+    class FakeClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url): return FakeResp()
+
+    async def fake_chat_text(messages, system_prompt=None, model="", temperature=0.5, **kw):
+        return "网友主要在讨论成本与安全性的取舍，情绪偏担忧。"
+
+    monkeypatch.setattr(m.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(m, "chat_text", fake_chat_text)
+    r2 = await client.get("/api/hot/discuss", params={"url": "https://x.example/a", "title": "T", "source": "weibo"})
+    assert r2.json()["ok"] and "讨论" in r2.json()["summary"]
+
+    # 3) JS 墙页面：提取不到正文 → 诚实失败
+    class EmptyResp(FakeResp):
+        text = "<html><body>short</body></html>"
+    async def _empty_get(self, url):
+        return EmptyResp()
+    FakeClient.get = _empty_get
+    r3 = await client.get("/api/hot/discuss", params={"url": "https://x.example/b", "title": "T2", "source": "douyin"})
+    assert not r3.json()["ok"] and r3.json()["reason"] == "js_or_login"

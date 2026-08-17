@@ -153,6 +153,18 @@ export function getHotList(source: string): Promise<HotListResult> {
   return request<HotListResult>('GET', `/hot?source=${encodeURIComponent(source)}`)
 }
 
+export interface DiscussResult {
+  ok: boolean
+  kind?: 'excerpt' | 'page'
+  summary?: string
+  reason?: string
+}
+
+export function getHotDiscuss(url: string, title: string, source: string): Promise<DiscussResult> {
+  return request<DiscussResult>('GET',
+    `/hot/discuss?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}&source=${encodeURIComponent(source)}`)
+}
+
 export interface Material {
   id: ID
   title: string

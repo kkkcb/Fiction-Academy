@@ -5,7 +5,7 @@ import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import type { HotItem, Material } from '../api'
 import { relativeTime } from '../utils/format'
-import { Flame, Bookmark, BookmarkCheck, Trash2, RefreshCw, ExternalLink, PenLine, X } from 'lucide-vue-next'
+import { Flame, Bookmark, BookmarkCheck, Trash2, RefreshCw, ExternalLink, PenLine, X, MessageSquareText } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{ variant?: 'modal' | 'page' }>(), { variant: 'modal' })
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -94,6 +94,28 @@ async function createFromMaterial(m: Material) {
   }
 }
 
+// ===== 看讨论 =====
+const discussions = ref<Record<string, { loading: boolean; ok: boolean; summary: string; reason?: string }>>({})
+
+function discussKey(item: { title: string }) { return item.title }
+
+async function toggleDiscuss(item: HotItem) {
+  const key = discussKey(item)
+  if (discussions.value[key]) {
+    delete discussions.value[key]
+    return
+  }
+  discussions.value[key] = { loading: true, ok: false, summary: '' }
+  try {
+    const r = await api.getHotDiscuss(item.url || '', item.title, activeSource.value)
+    discussions.value[key] = r.ok
+      ? { loading: false, ok: true, summary: r.summary || '' }
+      : { loading: false, ok: false, summary: '', reason: r.reason }
+  } catch (e) {
+    discussions.value[key] = { loading: false, ok: false, summary: '', reason: 'error' }
+  }
+}
+
 let lastHotAt = 0
 let summaryTimer: ReturnType<typeof setTimeout> | null = null
 let summaryRetries = 0
@@ -166,7 +188,8 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
         </div>
         <div v-if="hotLoading && !hotItems.length" class="mat-loading">热榜加载中…</div>
         <div v-else class="mat-list">
-          <div v-for="(item, i) in hotItems" :key="i" class="mat-item">
+          <div v-for="(item, i) in hotItems" :key="i" class="mat-item-wrap">
+          <div class="mat-item">
             <span class="mat-rank" :class="{ top: i < 3 }">{{ i + 1 }}</span>
             <div class="mat-item-main">
               <div class="mat-line1">
@@ -179,6 +202,16 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
               <div v-if="item.summary" class="mat-summary">{{ item.summary }}</div>
             </div>
             <button
+              v-if="item.url || activeSource === 'zhihu'"
+              class="btn btn-sm mat-discuss"
+              :class="{ open: !!discussions[item.title] }"
+              :aria-label="`查看讨论 ${item.title}`"
+              title="读取网页内容，看大家在讨论什么"
+              @click="toggleDiscuss(item)"
+            >
+              <MessageSquareText :size="13" :stroke-width="1.75" />
+            </button>
+            <button
               class="btn btn-sm mat-collect"
               :class="{ done: savedIds.has(activeSource + '::' + item.title) }"
               :aria-label="`收藏 ${item.title}`"
@@ -187,6 +220,20 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
               <BookmarkCheck v-if="savedIds.has(activeSource + '::' + item.title)" :size="13" :stroke-width="1.75" />
               <Bookmark v-else :size="13" :stroke-width="1.75" />
             </button>
+          </div>
+          <div v-if="discussions[item.title]" class="mat-discuss-box">
+            <template v-if="discussions[item.title].loading">
+              <span class="dot-pulse"></span> 正在读取网页讨论…
+            </template>
+            <template v-else-if="discussions[item.title].ok">
+              {{ discussions[item.title].summary }}
+            </template>
+            <template v-else>
+              {{ discussions[item.title].reason === 'js_or_login' || discussions[item.title].reason === 'fetch_failed'
+                ? '该平台内容需登录或动态加载，服务端读不到正文（知乎话题可直接看下方详情或概要）'
+                : '暂无可读的讨论内容' }}
+            </template>
+          </div>
           </div>
         </div>
       </div>
@@ -333,9 +380,23 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
 .mat-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
+}
+.mat-discuss { flex-shrink: 0; color: var(--text-tertiary); }
+.mat-discuss.open { color: var(--accent); }
+.mat-discuss-box {
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  white-space: pre-wrap;
 }
 .mat-item:hover { background: var(--bg-secondary); }
 .mat-rank {

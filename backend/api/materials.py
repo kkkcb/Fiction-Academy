@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from backend.config import HOT_API_BASE
 from backend.database import get_db, fetch_all, fetch_one
-from backend.agents.base import chat_json
+from backend.agents.base import chat_json, chat_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -69,13 +69,15 @@ async def _fetch_hot(source: str) -> list[dict]:
             hot = f"{int(hot) / 10000:.0f}万热度" if isinstance(hot, (int, float)) else str(hot)
         except (ValueError, TypeError):
             hot = str(hot)
-        # 知乎条目自带话题详情，直接作为概要
-        summary = (it.get("detail") or "").strip()[:80]
+        # 知乎条目自带话题详情：截断做概要，完整版留给「看讨论」
+        full_detail = (it.get("detail") or "").strip()
+        summary = full_detail[:80]
         items.append({
             "title": title,
             "hot": hot,
             "url": it.get("link") or "",
             "summary": summary,
+            "detail": full_detail[:600],
         })
     return items[:50]
 
@@ -248,3 +250,86 @@ async def delete_material(material_id: str):
     await db.execute("DELETE FROM materials WHERE id = ?", (material_id,))
     await db.commit()
     return {"ok": True}
+
+
+# ============================================================
+# 看讨论：读取热点网页正文，概括大家在讨论什么
+# ============================================================
+_discuss_cache: dict[str, tuple[float, dict]] = {}
+_DISCUSS_TTL = 1800
+
+
+def _extract_page_text(html: str) -> str:
+    """提取网页可读文本：优先 meta 摘要，否则去标签取正文。"""
+    import re as _re
+    for pattern in (
+        r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"',
+        r'<meta[^>]+name="description"[^>]+content="([^"]+)"',
+    ):
+        m = _re.search(pattern, html)
+        if m and len(m.group(1).strip()) >= 30:
+            import html as _html
+            return _html.unescape(m.group(1)).strip()[:2000]
+    text = _re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", " ", html, flags=_re.S | _re.I)
+    text = _re.sub(r"<[^>]+>", " ", text)
+    import html as _html
+    text = _html.unescape(text)
+    return _re.sub(r"\s+", " ", text).strip()[:3000]
+
+
+@router.get("/hot/discuss")
+async def hot_discuss(url: str = "", title: str = "", source: str = ""):
+    """读取热点链接页面并概括讨论内容。
+    知乎走本地缓存的话题详情；能抓到正文的开源页用 LLM 概括；
+    需登录/JS 渲染的平台诚实返回不可读。"""
+    import time as _time
+
+    # 知乎：本地缓存里就有完整话题详情（真实讨论摘录，零成本）
+    if source == "zhihu" and title:
+        cached = _HOT_CACHE.get("zhihu")
+        if cached:
+            for it in cached[1]:
+                if it["title"] == title and it.get("detail"):
+                    return {"ok": True, "kind": "excerpt", "summary": it["detail"]}
+        return {"ok": False, "reason": "no_content"}
+
+    if not url:
+        return {"ok": False, "reason": "no_url"}
+
+    hit = _discuss_cache.get(url)
+    if hit and hit[0] > _time.time():
+        return hit[1]
+
+    try:
+        async with httpx.AsyncClient(timeout=12, trust_env=False, follow_redirects=True,
+                                     headers={"User-Agent": _UA}) as client:
+            r = await client.get(url)
+        r.raise_for_status()
+        text = _extract_page_text(r.text[:262144])
+    except Exception as e:
+        logger.info("[hot/discuss] fetch failed %s: %s", url[:60], e)
+        return {"ok": False, "reason": "fetch_failed"}
+
+    if len(text) < 40:
+        return {"ok": False, "reason": "js_or_login"}
+
+    try:
+        prompt = (
+            f"热点标题：{title}\n\n"
+            f"网页内容：{text}\n\n"
+            "用2-3句话概括这个页面里大家在讨论什么（核心观点/争议点/情绪倾向）。"
+            "只依据页面内容，不要编造。"
+        )
+        summary = await chat_text(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt="你是新闻编辑，擅长提炼网络讨论的核心。",
+            temperature=0.3,
+        )
+    except Exception as e:
+        logger.warning("[hot/discuss] llm failed: %s", e)
+        return {"ok": False, "reason": "llm_failed"}
+
+    result = {"ok": True, "kind": "page", "summary": (summary or "").strip()[:500]}
+    if result["summary"]:
+        _discuss_cache[url] = (_time.time() + _DISCUSS_TTL, result)
+    return result
