@@ -28,7 +28,7 @@ HOT_SOURCES = {
 
 # 热榜缓存：源 → (过期时间戳, 数据)。TTL 10 分钟，规避公共实例限频（429）。
 _HOT_CACHE: dict[str, tuple[float, list[dict]]] = {}
-_HOT_TTL = 600
+_HOT_TTL = 24 * 3600  # 一天一更：讨论区才是重点，热榜刷新太勤会烧掉公共实例配额（429）
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FictionAcademy/1.0"
 
 

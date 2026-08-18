@@ -124,14 +124,14 @@ let summaryRetries = 0
 function scheduleSummaryRefetch(items: { summary?: string }[]) {
   if (summaryTimer) clearTimeout(summaryTimer)
   const withSummary = items.filter(i => i.summary).length
-  if (withSummary >= Math.min(5, items.length) || summaryRetries >= 3) {
+  if (withSummary >= Math.min(5, items.length) || summaryRetries >= 2) {
     summaryRetries = 0
     return
   }
   summaryRetries += 1
   summaryTimer = setTimeout(() => {
     if (tab.value === 'hot') loadHot()
-  }, 25_000)
+  }, 45_000)
 }
 
 /** 切回本页时调用：热榜数据超过 5 分钟才静默重拉（期间照常显示旧数据） */

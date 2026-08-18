@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
         while True:
             _HOT_CACHE.clear()  # 让下一轮重新拉新
             await warm_hot_cache()
-            await asyncio.sleep(600)
+            await asyncio.sleep(24 * 3600)  # 一天一更
 
     hot_task = asyncio.create_task(_hot_keepalive())
 
