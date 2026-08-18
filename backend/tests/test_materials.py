@@ -119,7 +119,7 @@ async def test_hot_discuss_paths(client, monkeypatch):
 
     monkeypatch.setattr(m.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(m, "chat_text", fake_chat_text)
-    r2 = await client.get("/api/hot/discuss", params={"url": "https://x.example/a", "title": "T", "source": "douyin"})
+    r2 = await client.get("/api/hot/discuss", params={"url": "https://x.example/a", "title": "T", "source": "news60"})
     assert r2.json()["ok"] and "讨论" in r2.json()["summary"]
 
     # 3) JS 墙页面：提取不到正文 → 诚实失败
@@ -128,7 +128,7 @@ async def test_hot_discuss_paths(client, monkeypatch):
     async def _empty_get(self, url):
         return EmptyResp()
     FakeClient.get = _empty_get
-    r3 = await client.get("/api/hot/discuss", params={"url": "https://x.example/b", "title": "T2", "source": "douyin"})
+    r3 = await client.get("/api/hot/discuss", params={"url": "https://x.example/b", "title": "T2", "source": "news60"})
     assert not r3.json()["ok"] and r3.json()["reason"] == "js_or_login"
 
 
@@ -169,3 +169,36 @@ async def test_weibo_discuss_layers(client, monkeypatch):
     r2 = await client.get("/api/hot/discuss", params={"title": "测试热点", "source": "weibo"})
     body2 = r2.json()
     assert body2["ok"] and body2["kind"] == "weibo_posts" and "争议" in body2["summary"]
+
+
+@pytest.mark.asyncio
+async def test_douyin_discuss_layers(client, monkeypatch):
+    """抖音评论链：未配 Cookie 诚实提示；配了走 搜索→评论→LLM。"""
+    import backend.config as cfg
+    import backend.services.douyin as dy
+    from backend.api import materials as m
+
+    # 1) 无 Cookie
+    monkeypatch.setattr(cfg, "DOUYIN_COOKIE", "")
+    dy.DOUYIN_COOKIE = ""
+    r1 = await client.get("/api/hot/discuss", params={"title": "测试热", "source": "douyin"})
+    body = r1.json()
+    assert not body["ok"] and "DOUYIN_COOKIE" in body.get("hint", "")
+
+    # 2) 有 Cookie：打桩搜索/评论/LLM
+    async def fake_search(keyword, count=10):
+        return [{"aweme_id": "7345", "desc": "视频A"}]
+
+    async def fake_comments(aweme_id, count=20):
+        return ["网友A：这价格离谱了", "网友B：质量其实还行"]
+
+    async def fake_chat_text(messages, system_prompt=None, model="", temperature=0.5, **kw):
+        return "评论区集中在价格与质量的争论，情绪两极。"
+
+    monkeypatch.setattr(dy, "DOUYIN_COOKIE", "ttwid=xxx")
+    monkeypatch.setattr(dy, "search_videos", fake_search)
+    monkeypatch.setattr(dy, "fetch_comments", fake_comments)
+    monkeypatch.setattr(m, "chat_text", fake_chat_text)
+    r2 = await client.get("/api/hot/discuss", params={"title": "测试热", "source": "douyin"})
+    body2 = r2.json()
+    assert body2["ok"] and body2["kind"] == "douyin_comments" and "争论" in body2["summary"]

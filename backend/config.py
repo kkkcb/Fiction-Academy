@@ -58,6 +58,8 @@ HOT_API_BASE = os.getenv("HOT_API_BASE", "https://60s.viki.moe/v2")
 # 可选：解锁微博讨论读取（模式来自 github.com/injahow/weibo-rss）
 # 浏览器登录 m.weibo.cn 后 F12 → Network → 任意请求的 Cookie 头，整串复制
 WEIBO_COOKIE = os.getenv("WEIBO_COOKIE", "")
+# 可选：解锁抖音评论区（浏览器登录 www.douyin.com 后复制 Cookie）
+DOUYIN_COOKIE = os.getenv("DOUYIN_COOKIE", "")
 # 可选：自托管 RSSHub（docker run -d -p 1200:1200 diygod/rsshub）后填 http://127.0.0.1:1200
 RSSHUB_BASE = os.getenv("RSSHUB_BASE", "").rstrip("/")
 

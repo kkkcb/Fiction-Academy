@@ -369,6 +369,10 @@ async def hot_discuss(url: str = "", title: str = "", source: str = ""):
     if source == "weibo" and title:
         return await _weibo_discuss(title)
 
+    if source == "douyin" and title:
+        from backend.services.douyin import douyin_discuss
+        return await douyin_discuss(title, chat_text)
+
     if not url:
         return {"ok": False, "reason": "no_url"}
 

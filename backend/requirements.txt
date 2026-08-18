@@ -7,3 +7,4 @@ python-dotenv>=1.0.0
 aiosqlite>=0.20.0
 sse-starlette>=2.0.0
 jieba>=0.42.1
+gmssl
