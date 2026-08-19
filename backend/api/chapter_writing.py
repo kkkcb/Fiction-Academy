@@ -103,6 +103,16 @@ async def _load_pending_foreshadows(db, project_id: str, chapter_number: int) ->
 
 
 async def _get_next_chapter_number(db, project_id: str) -> int:
+    # 优先复用空草稿（上次中断留下的空壳），避免跳号与"正在写作中"冲突
+    empty = await fetch_one(
+        db,
+        """SELECT chapter_number FROM workspace_items
+           WHERE project_id = ? AND item_type = 'chapter' AND status = 'draft'
+             AND (content IS NULL OR content = '') ORDER BY chapter_number LIMIT 1""",
+        (project_id,),
+    )
+    if empty:
+        return int(empty["chapter_number"])
     row = await fetch_one(
         db,
         "SELECT MAX(chapter_number) as mx FROM workspace_items WHERE project_id = ? AND item_type = 'chapter'",
@@ -447,8 +457,35 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
     chapter_title = plan_meta.get("chapter_title", f"第{chapter_number}章")
     _writing_progress[project_id] = {"chapter": chapter_number, "title": chapter_title,
                                      "since": _time.time(), "fast": fast}
+
+    # 开写即建草稿：章节列表立刻可见"草稿"条目，内容边写边落库
+    existing_draft = await fetch_one(
+        db,
+        """SELECT id FROM workspace_items WHERE project_id = ? AND item_type = 'chapter'
+           AND chapter_number = ? AND status = 'draft'""",
+        (project_id, chapter_number),
+    )
+    draft_id = old_chapter_id or (existing_draft["id"] if existing_draft else None) or str(uuid.uuid4())
+    try:
+        if old_chapter_id or existing_draft:
+            await db.execute(
+                "UPDATE workspace_items SET status = 'draft', title = ?, content = '', updated_at = datetime('now') WHERE id = ?",
+                (chapter_title, draft_id),
+            )
+        else:
+            sort_order = await next_sort_order(db, project_id)
+            await db.execute(
+                """INSERT INTO workspace_items
+                   (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
+                   VALUES (?, ?, 'chapter', 'draft', ?, '', '{}', ?, ?)""",
+                (draft_id, project_id, chapter_title, chapter_number, sort_order),
+            )
+        await db.commit()
+    except Exception:
+        raise HTTPException(status_code=409, detail="该章正在写作中，请等待完成")
+
     yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title,
-                "plan": plan_content})
+                "plan": plan_content, "draft_id": draft_id})
 
     # --- 2. 组装执笔上下文 ---
     from backend.services.kg import build_kg_injection
@@ -475,6 +512,7 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
 
     # --- 3. 流式执笔（网关攒包下思考可能吃光 token 导致正文为空 → 自动重试） ---
     full_text = ""
+    _saved_len = 0
     for attempt in range(3):
         try:
             async for kind, chunk in chat_stream(
@@ -489,11 +527,16 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
                     continue
                 full_text += chunk
                 yield emit({"content": chunk})
+                if len(full_text) - _saved_len >= 1200:
+                    _saved_len = len(full_text)
+                    await db.execute("UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+                                     (full_text, draft_id))
+                    await db.commit()
             if full_text.strip():
                 break
         except LLMError as e:
             if full_text.strip():
-                await _save_chapter(db, project_id, chapter_number, chapter_title, full_text + "\n\n[本章生成中断]", "draft")
+                await _save_chapter(db, project_id, chapter_number, chapter_title, full_text + "\n\n[本章生成中断]", "draft", reuse_id=draft_id)
                 yield emit({"error": f"生成失败: {e}"})
                 return
             if attempt == 2:
@@ -505,6 +548,14 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
             why = f"正文为空，重试第 {attempt + 1}/2 次…" if not full_text.strip() else (
                 f"字数不足（{len(full_text.strip())}/{min_words} 下限），重写第 {attempt + 1}/2 次…")
             full_text = ""
+
+            _saved_len = 0
+
+            await db.execute("UPDATE workspace_items SET content = '', updated_at = datetime('now') WHERE id = ?", (draft_id,))
+
+            await db.commit()
+
+            full_text = ""
             yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title, "message": why})
 
     if not full_text.strip():
@@ -513,7 +564,7 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
 
     # --- 4. 存档 + 钩子（编年史/摘要，后台异步） ---
     from backend.api.workspace import _spawn_bg, _trigger_chronicle_update, _generate_chapter_summary
-    item_id = await _save_chapter(db, project_id, chapter_number, chapter_title, full_text, "finalized")
+    item_id = await _save_chapter(db, project_id, chapter_number, chapter_title, full_text, "finalized", reuse_id=draft_id)
     if old_chapter_id and old_chapter_id != item_id:
         await db.execute("DELETE FROM workspace_items WHERE id = ?", (old_chapter_id,))
         await db.commit()
@@ -528,7 +579,17 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
 
 
 async def _save_chapter(db, project_id: str, chapter_number: int, title: str,
-                        content: str, status: str) -> str:
+                        content: str, status: str, reuse_id: str | None = None) -> str:
+    if reuse_id:
+        await db.execute(
+            """UPDATE workspace_items SET status = ?, title = ?, content = ?,
+               metadata = ?, updated_at = datetime('now') WHERE id = ?""",
+            (status, title, content,
+             json.dumps({"word_count": len(content)}, ensure_ascii=False), reuse_id),
+        )
+        await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
+        await db.commit()
+        return reuse_id
     item_id = str(uuid.uuid4())
     sort_order = await next_sort_order(db, project_id)
     await db.execute(
