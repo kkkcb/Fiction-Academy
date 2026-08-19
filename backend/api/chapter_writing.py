@@ -484,7 +484,9 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
                 disable_thinking=fast,  # fast=快速模式关思考；默认精细模式（上限32k后思考不再耗尽）
             ):
                 if kind == "reasoning":
-                    continue  # 阅读器只显示正文
+                    # 思考流实时转发：等待期可见构思过程，也避免前端空闲误判
+                    yield emit({"thinking": chunk})
+                    continue
                 full_text += chunk
                 yield emit({"content": chunk})
             if full_text.strip():
@@ -517,6 +519,8 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
         await db.commit()
     _spawn_bg(_trigger_chronicle_update(project_id, chapter_title, full_text))
     _spawn_bg(_generate_chapter_summary(item_id, chapter_title, full_text))
+    from backend.services.story_web import summarize_chapter as _sw_summarize
+    _spawn_bg(_sw_summarize(item_id, chapter_title, full_text))
 
     _writing_progress.pop(project_id, None)
     yield emit({"done": True, "item_id": item_id, "chapter_number": chapter_number,
@@ -562,3 +566,21 @@ async def writing_status(project_id: str):
         "max_chapter": row["mx"],
         "total_words": row["words"],
     }
+
+
+@router.get("/projects/{project_id}/story-web")
+async def get_story_web(project_id: str):
+    """章节脉络网：章节轴（含概要/类型）+ 人物线/伏笔线交织。"""
+    from backend.services.story_web import build_story_web
+    return await build_story_web(project_id)
+
+
+class BackfillBody(BaseModel):
+    limit: int = 3
+
+
+@router.post("/projects/{project_id}/story-web/backfill")
+async def backfill_story_web(project_id: str, body: BackfillBody):
+    """为缺脉络数据的章节批量补生成（每调一次处理 limit 章，循环到 remaining=0）。"""
+    from backend.services.story_web import backfill as _backfill
+    return await _backfill(project_id, max(1, min(body.limit, 5)))

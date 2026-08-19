@@ -110,3 +110,57 @@ async def test_write_stream_requires_skeleton(client, project_id, write_stubs):
     assert resp.status_code == 200
     lines = [json.loads(l) for l in resp.text.strip().split("\n") if l.strip()]
     assert lines and "骨架" in lines[0].get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_story_web_builds_threads(client, project_id):
+    """脉络网组装：人物线聚合 + 伏笔埋收连线（纯 DB 组装，无 LLM）。"""
+    from backend.services.story_web import build_story_web
+    from backend.database import get_db
+    import json as _json
+
+    db = await get_db()
+    for n, web in [
+        (1, {"plot": "p1", "characters": ["顾平安", "沈青梧"], "foreshadows_setup": ["老槐树下的铁盒"], "foreshadows_payoff": []}),
+        (2, {"plot": "p2", "characters": ["顾平安"], "foreshadows_setup": [], "foreshadows_payoff": ["老槐树下的铁盒"]}),
+    ]:
+        meta = {"web": web}
+        if n == 2:
+            meta["chapter_types"] = ["推剧情"]
+        await db.execute(
+            """INSERT INTO workspace_items (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
+               VALUES (?, ?, 'chapter', 'finalized', ?, ?, ?, ?, ?)""",
+            (f"sw-{n}", project_id, f"第{n}章", "内容" * 40, _json.dumps(meta, ensure_ascii=False), n, n),
+        )
+    await db.commit()
+
+    web = await build_story_web(project_id)
+    assert len(web["chapters"]) == 2
+    gu = next(t for t in web["threads"] if t["kind"] == "character" and t["name"] == "顾平安")
+    assert gu["chapters"] == [1, 2]
+    fs = next(t for t in web["threads"] if t["kind"] == "foreshadow")
+    assert fs["setup_ch"] == 1 and 2 in fs["chapters"] and 2 in fs["payoff_chs"]
+
+
+@pytest.mark.asyncio
+async def test_story_web_backfill(client, project_id, monkeypatch):
+    from backend.services import story_web as sw
+
+    async def fake_chat_json(messages, system_prompt=None, model="", temperature=0.5, **kw):
+        return {"plot": "本章顾平安救下沈青梧", "characters": ["顾平安"],
+                "foreshadows_setup": ["铁盒"], "foreshadows_payoff": [], "emotion": "暖"}
+
+    monkeypatch.setattr(sw, "chat_json", fake_chat_json)
+    from backend.database import get_db
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO workspace_items (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
+               VALUES ('sw-bf', ?, 'chapter', 'finalized', '第9章', ?, '{}', 9, 9)""",
+            (project_id, "内容" * 60),
+    )
+    await db.commit()
+
+    r = await client.post(f"/api/projects/{project_id}/story-web/backfill", json={"limit": 3})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] >= 1 and body["remaining"] == 0

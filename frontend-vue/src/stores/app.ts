@@ -97,6 +97,7 @@ export const useAppStore = defineStore('app', () => {
   const isWritingChapter = ref(false)
   const writingPhase = ref('')
   const writingContent = ref('')
+  const writingThinking = ref('')
   const writingChapterNumber = ref<number | null>(null)
   const writingChapterTitle = ref('')
   let writingAbort: (() => void) | null = null
@@ -548,6 +549,7 @@ export const useAppStore = defineStore('app', () => {
   async function _writeRun(projectId: ID, regenerate: boolean, hint: string, fast: boolean, done: (ok: boolean) => void) {
     isWritingChapter.value = true
     writingContent.value = ''
+    writingThinking.value = ''
     writingChapterNumber.value = null
     writingChapterTitle.value = ''
     writingPhase.value = regenerate ? '正在准备重写本章…' : '正在准备写作…'
@@ -558,6 +560,9 @@ export const useAppStore = defineStore('app', () => {
         if (meta.chapter_number) writingChapterNumber.value = meta.chapter_number
         if (meta.chapter_title) writingChapterTitle.value = meta.chapter_title
       },
+      onThinking: text => {
+        writingThinking.value += text
+      },
       onChunk: text => {
         writingPhase.value = ''
         writingContent.value += text
@@ -565,6 +570,7 @@ export const useAppStore = defineStore('app', () => {
       onDone: async () => {
         isWritingChapter.value = false
         writingPhase.value = ''
+        writingThinking.value = ''
         notifySuccess('本章已完成并存档，编年史已更新')
         await fetchWorkspaceItems(projectId)
         await fetchKgGraph(projectId).catch(() => {})
@@ -1085,6 +1091,7 @@ export const useAppStore = defineStore('app', () => {
     writingAbort?.()
     isWritingChapter.value = false
     writingContent.value = ''
+    writingThinking.value = ''
     writingPhase.value = ''
     centerView.value = 'chat'
     const token = ++_navToken
@@ -1228,6 +1235,7 @@ export const useAppStore = defineStore('app', () => {
     isWritingChapter,
     writingPhase,
     writingContent,
+    writingThinking,
     writingChapterNumber,
     writingChapterTitle,
     batchWriting,

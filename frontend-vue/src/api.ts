@@ -35,11 +35,11 @@ interface IdleWatchdog {
   cancel: () => void
 }
 
-function makeIdleWatchdog(onTimeout: () => void): IdleWatchdog {
+function makeIdleWatchdog(onTimeout: () => void, timeoutMs: number = STREAM_IDLE_TIMEOUT_MS): IdleWatchdog {
   let timer: ReturnType<typeof setTimeout> | null = null
   const schedule = () => {
     if (timer) clearTimeout(timer)
-    timer = setTimeout(onTimeout, STREAM_IDLE_TIMEOUT_MS)
+    timer = setTimeout(onTimeout, timeoutMs)
   }
   return {
     touch: schedule,
@@ -507,6 +507,7 @@ export interface WriteChapterDone {
 export interface WriteChapterEvents {
   onPhase: (meta: WriteChapterMeta) => void
   onChunk: (text: string) => void
+  onThinking?: (text: string) => void
   onDone: (info: WriteChapterDone) => void
   onError: (err: StreamError, partialContent: string) => void
 }
@@ -537,11 +538,11 @@ export function streamWriteChapter(
   const watchdog = makeIdleWatchdog(() => {
     if (finished) return
     finished = true
-    const err = new Error(`服务器 ${STREAM_IDLE_TIMEOUT_MS / 1000}s 无响应，已断开（可重试）`) as StreamError
+    const err = new Error('生成仍在进行（网关为整包返回，精细模式一章可达数分钟），请耐心等待') as StreamError
     err.status = 504
     events.onError(err, fullContent)
     xhr.abort()
-  })
+  }, 600_000)
 
   function onDoneSafe() {
     // 流可能在 done 行之后还有 onload 触发，只回调一次由 finished 保证
@@ -577,6 +578,7 @@ export function streamWriteChapter(
           return
         }
         if (obj.phase) events.onPhase(obj)
+        if (obj.thinking) events.onThinking?.(obj.thinking)
         if (obj.content) {
           fullContent += obj.content
           events.onChunk(obj.content)
@@ -742,4 +744,23 @@ export interface WritingStatus {
 
 export function getWritingStatus(projectId: ID): Promise<WritingStatus> {
   return request<WritingStatus>('GET', `/projects/${projectId}/writing/status`)
+}
+
+export interface StoryWebChapter {
+  chapter: number; title: string; words: number; types: string[]; plot: string; emotion: string
+}
+export interface StoryWebThread {
+  kind: string; name: string; chapters: number[]
+  setup_ch?: number | null; payoff_chs?: number[]
+}
+export interface StoryWeb {
+  chapters: StoryWebChapter[]
+  threads: StoryWebThread[]
+  missing_web: number
+}
+export function getStoryWeb(projectId: ID): Promise<StoryWeb> {
+  return request<StoryWeb>('GET', `/projects/${projectId}/story-web`)
+}
+export function backfillStoryWeb(projectId: ID, limit: number): Promise<{ updated: number; remaining: number }> {
+  return request('POST', `/projects/${projectId}/story-web/backfill`, { limit })
 }

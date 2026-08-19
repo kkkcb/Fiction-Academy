@@ -597,7 +597,10 @@ async def _trigger_chronicle_update(project_id: str, chapter_title: str, chapter
         if chronicle_row:
             raw_parts = []
             for tl in updated.get("timeline", []):
-                raw_parts.append(f"[{tl.get('time','')}] {tl.get('event','')}")
+                if isinstance(tl, dict):
+                    raw_parts.append(f"[{tl.get('time','')}] {tl.get('event','')}")
+                else:
+                    raw_parts.append(str(tl))  # 模型偶尔回纯字符串，兜底
             raw_text = "\n".join(raw_parts)
 
             await db.execute(

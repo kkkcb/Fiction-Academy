@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import type { WorkspaceItem } from '../types'
+import ThinkingBlock from './ThinkingBlock.vue'
 import { POINT_NAV, STATUS_LABELS, relativeTime, formatMd } from '../utils/format'
 import { BrainCircuit, ClipboardList, Search, BookOpen, CircleX, CircleAlert, CircleHelp, CircleCheck, Circle, Rocket, PenLine } from 'lucide-vue-next'
 
@@ -22,6 +23,7 @@ const {
   isWritingChapter,
   writingPhase,
   writingContent,
+  writingThinking,
   writingChapterNumber,
   writingChapterTitle,
   workspaceItems,
@@ -286,7 +288,8 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
             </div>
             <div v-else class="reader-meta">已存档</div>
           </div>
-          <div v-if="isWritingChapter && !writingContent" class="reader-waiting">{{ writingPhase || '正在准备…' }}</div>
+          <div v-if="isWritingChapter && !writingContent && !writingThinking" class="reader-waiting">{{ writingPhase || '正在准备…' }}</div>
+          <ThinkingBlock v-if="isWritingChapter && writingThinking && !writingContent" :text="writingThinking" :streaming="true" class="writing-thinking" />
           <article class="reader-content">
             <div v-html="renderProse(writingContent)"></div>
             <span v-if="isWritingChapter" class="writing-cursor"></span>
