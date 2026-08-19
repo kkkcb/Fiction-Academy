@@ -517,6 +517,11 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function openWriting() {
+    // 小说写作已独立为一级页面（骨架定稿后写作是主战场）
+    if (currentProjectId.value) {
+      navigateTo('writing', { currentProjectId: currentProjectId.value })
+      return
+    }
     centerView.value = centerView.value === 'writing' ? 'chat' : 'writing'
   }
 
@@ -1092,7 +1097,7 @@ export const useAppStore = defineStore('app', () => {
     if (patch.points !== undefined) points.value = patch.points
     if (patch.currentAssistantId !== undefined) currentAssistantId.value = patch.currentAssistantId
 
-    if (routeVal === 'workspace' && params.currentProjectId) {
+    if ((routeVal === 'workspace' || routeVal === 'writing') && params.currentProjectId) {
       const pid = params.currentProjectId
       await Promise.allSettled([
         fetchConversations(pid),

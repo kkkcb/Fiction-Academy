@@ -9,6 +9,7 @@ import { BrainCircuit, ClipboardList, Search, BookOpen, CircleX, CircleAlert, Ci
 
 const store = useAppStore()
 const {
+  route,
   batchWriting,
   batchTarget,
   batchDone,
@@ -155,8 +156,8 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
 
 <template>
   <div class="writing-panel">
-    <header class="writing-header">
-      <div class="wh-left">
+    <header class="writing-header" :class="{ standalone: route === 'writing' }">
+      <div v-if="route !== 'writing'" class="wh-left">
         <div class="wh-title">小说写作</div>
         <div class="wh-sub">
           {{ currentProject?.name }} ·
@@ -673,4 +674,8 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
   outline: none;
 }
 .chapter-edit-area:focus { border-color: var(--accent); }
+</style>
+
+<style scoped>
+.writing-header.standalone { justify-content: flex-end; }
 </style>
