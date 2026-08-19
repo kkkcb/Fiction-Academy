@@ -371,7 +371,12 @@ async def write_chapter_stream(project_id: str, body: WriteChapterRequest):
     )
 
 
+# 写作进度登记：project_id -> {"chapter": N, "title": str, "since": ts}
+_writing_progress: dict[str, dict] = {}
+
+
 async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: bool, fast: bool = False):
+    import time as _time
     db = await get_db()
 
     def emit(obj: dict) -> str:
@@ -440,6 +445,8 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
         await db.commit()
 
     chapter_title = plan_meta.get("chapter_title", f"第{chapter_number}章")
+    _writing_progress[project_id] = {"chapter": chapter_number, "title": chapter_title,
+                                     "since": _time.time(), "fast": fast}
     yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title,
                 "plan": plan_content})
 
@@ -511,6 +518,7 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
     _spawn_bg(_trigger_chronicle_update(project_id, chapter_title, full_text))
     _spawn_bg(_generate_chapter_summary(item_id, chapter_title, full_text))
 
+    _writing_progress.pop(project_id, None)
     yield emit({"done": True, "item_id": item_id, "chapter_number": chapter_number,
                 "chapter_title": chapter_title, "word_count": len(full_text)})
 
@@ -529,3 +537,28 @@ async def _save_chapter(db, project_id: str, chapter_number: int, title: str,
     await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
     await db.commit()
     return item_id
+
+
+@router.get("/projects/{project_id}/writing/status")
+async def writing_status(project_id: str):
+    """写作进度：是否在写、当前章、章节总数与总字数（供界面实时显示）。"""
+    import time as _time
+    db = await get_db()
+    row = await fetch_one(
+        db,
+        """SELECT COUNT(*) n, COALESCE(SUM(LENGTH(content)), 0) words,
+                  MAX(chapter_number) mx FROM workspace_items
+           WHERE project_id = ? AND item_type = 'chapter'""",
+        (project_id,),
+    )
+    prog = _writing_progress.get(project_id)
+    in_progress = bool(prog and _time.time() - prog["since"] < 900)  # 15分钟无更新视为过期
+    return {
+        "in_progress": in_progress,
+        "current_chapter": (prog or {}).get("chapter"),
+        "current_title": (prog or {}).get("title"),
+        "fast": (prog or {}).get("fast", False),
+        "chapters": row["n"],
+        "max_chapter": row["mx"],
+        "total_words": row["words"],
+    }

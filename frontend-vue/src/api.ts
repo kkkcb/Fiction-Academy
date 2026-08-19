@@ -729,3 +729,17 @@ export interface LintResult {
 export function lintProject(projectId: ID): Promise<LintResult> {
   return request<LintResult>('POST', `/projects/${projectId}/lint`)
 }
+
+export interface WritingStatus {
+  in_progress: boolean
+  current_chapter?: number
+  current_title?: string
+  fast?: boolean
+  chapters: number
+  max_chapter?: number
+  total_words: number
+}
+
+export function getWritingStatus(projectId: ID): Promise<WritingStatus> {
+  return request<WritingStatus>('GET', `/projects/${projectId}/writing/status`)
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
@@ -28,6 +28,23 @@ const {
 } = storeToRefs(store)
 
 const selectedId = ref<string | null>(null)
+
+// ===== 实时写作进度（后台批量/他人会话写作时也可见） =====
+const liveStatus = ref<api.WritingStatus | null>(null)
+let statusTimer: ReturnType<typeof setInterval> | null = null
+
+async function pollStatus() {
+  if (!currentProjectId.value) return
+  try {
+    liveStatus.value = await api.getWritingStatus(currentProjectId.value)
+  } catch { /* 忽略 */ }
+}
+
+onMounted(() => {
+  pollStatus()
+  statusTimer = setInterval(pollStatus, 5000)
+})
+onUnmounted(() => { if (statusTimer) clearInterval(statusTimer) })
 const selected = computed<WorkspaceItem | null>(() =>
   chapters.value.find(c => c.id === selectedId.value) || null,
 )
@@ -201,6 +218,16 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
         <span v-else class="wh-not-ready">骨架未完成，先去创作流程把五个点位定稿</span>
       </div>
     </header>
+
+    <!-- 后台写作实时进度 -->
+    <div v-if="liveStatus?.in_progress && !batchWriting" class="batch-bar live-bar">
+      <span class="dot-pulse"></span>
+      <span class="batch-text">
+        正在写第 {{ liveStatus.current_chapter }}章《{{ liveStatus.current_title }}》
+        <span v-if="liveStatus.fast">（快速模式）</span> · 本书已 {{ liveStatus.chapters }} 章 / {{ (liveStatus.total_words / 10000).toFixed(1) }} 万字
+      </span>
+      <button class="btn btn-sm" aria-label="立即刷新章节列表" @click="currentProjectId && store.fetchWorkspaceItems(currentProjectId)">刷新列表</button>
+    </div>
 
     <!-- 连续写作：进度/审阅横幅 -->
     <div v-if="batchWriting" class="batch-bar">
@@ -713,4 +740,8 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
   padding: 0 6px;
   line-height: 16px;
 }
+</style>
+
+<style scoped>
+.live-bar { background: var(--accent-lighter); }
 </style>
