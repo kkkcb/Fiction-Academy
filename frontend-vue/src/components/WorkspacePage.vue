@@ -11,7 +11,7 @@ import MessageList from './MessageList.vue'
 import ChatInput from './ChatInput.vue'
 import IconMoon from './icons/IconMoon.vue'
 import IconSun from './icons/IconSun.vue'
-import { Archive, PanelRight } from 'lucide-vue-next'
+import { Archive, PanelRight, PenLine } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -161,6 +161,15 @@ async function handleArchive() {
           {{ isArchiving ? '存档中...' : '总结并存档' }}
         </button>
         <span v-else-if="isPointMode && currentPointData?.status === 'done'" class="badge-done">已存档</span>
+        <button
+          class="btn btn-sm mode-pill"
+          title="切换到小说创作（章节写作）"
+          aria-label="切换到小说创作"
+          @click="store.navigateTo('writing', { currentProjectId: currentProjectId! })"
+        >
+          <PenLine :size="13" :stroke-width="1.75" /> 去写作
+        </button>
+
         <button
           class="theme-toggle"
           :class="{ active: !showRightPanel }"

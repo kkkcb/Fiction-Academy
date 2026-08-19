@@ -16,7 +16,7 @@ onMounted(() => {
 <template>
   <div class="writing-page">
     <header class="wp-topbar">
-      <button class="btn btn-sm" aria-label="返回骨架工作台" title="骨架工作台（点位/对话/总览）" @click="store.navigateTo('workspace', { currentProjectId: currentProjectId! })">
+      <button class="btn btn-sm mode-pill" aria-label="切换到骨架工作台" title="骨架工作台（点位/对话/总览）" @click="store.navigateTo('workspace', { currentProjectId: currentProjectId! })">
         <ChevronLeft :size="14" :stroke-width="1.75" /> 骨架工作台
       </button>
       <div class="wp-title">

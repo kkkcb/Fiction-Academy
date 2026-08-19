@@ -40,7 +40,12 @@ function timeText(p: Project) {
 }
 
 function openProject(p: Project) {
-  store.navigateTo('workspace', { currentProjectId: p.id })
+  // 记住每本书上次的模式（骨架工作台 / 小说创作），进入零选择成本
+  store.openProject(p.id)
+}
+
+function openProjectAt(p: Project, mode: 'workspace' | 'writing') {
+  store.navigateTo(mode, { currentProjectId: p.id })
 }
 
 function closeCreate() {
@@ -171,6 +176,8 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
         <div class="project-card-footer">
           <span class="project-time">{{ timeText(p) }}</span>
           <div class="project-card-ops">
+            <button class="btn btn-sm project-quick" :aria-label="`进入${p.name}骨架工作台`" title="骨架工作台（点位/设定/图谱）" @click.stop="openProjectAt(p, 'workspace')">骨架</button>
+            <button class="btn btn-sm project-quick" :aria-label="`进入${p.name}小说创作`" title="小说创作（章节写作）" @click.stop="openProjectAt(p, 'writing')">写作</button>
             <button class="btn btn-sm" :aria-label="`重命名项目 ${p.name}`" @click.stop="startRename(p)">重命名</button>
             <button class="btn btn-sm project-delete" :aria-label="`删除项目 ${p.name}`" @click.stop="handleDelete(p.id)">删除</button>
           </div>

@@ -2526,3 +2526,7 @@ body {
 .section-head .section-arrow { transition: transform 0.15s; vertical-align: -1px; margin-right: 2px; }
 .section-head .section-arrow.folded { transform: rotate(-90deg); }
 .section-head-inner { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--text-secondary); }
+
+/* ===== 模式切换胶囊（骨架⇄写作 丝滑互切） ===== */
+.mode-pill { flex-shrink: 0; }
+.project-quick { color: var(--accent); }

@@ -516,6 +516,15 @@ export const useAppStore = defineStore('app', () => {
     localStorage.setItem('fa_sidebar_collapsed', sidebarCollapsed.value ? '1' : '0')
   }
 
+  /** 进入项目时用的模式：记住每本书上次所在（骨架工作台/小说创作） */
+  function lastProjectMode(pid: ID): 'workspace' | 'writing' {
+    return localStorage.getItem('fa_mode_' + pid) === 'writing' ? 'writing' : 'workspace'
+  }
+
+  function openProject(pid: ID) {
+    navigateTo(lastProjectMode(pid), { currentProjectId: pid })
+  }
+
   function openWriting() {
     // 小说写作已独立为一级页面（骨架定稿后写作是主战场）
     if (currentProjectId.value) {
@@ -1059,6 +1068,19 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function navigateTo(routeVal: string, params: NavPatch = {}) {
+    // 丝滑切换：同项目内 工作台⇄写作 只换视图，不重置不重拉（消除割裂感）
+    const sameProjectSwitch =
+      (routeVal === 'workspace' || routeVal === 'writing') &&
+      (route.value === 'workspace' || route.value === 'writing') &&
+      (params.currentProjectId ?? currentProjectId.value) === currentProjectId.value &&
+      !!currentProjectId.value
+    if (sameProjectSwitch) {
+      route.value = routeVal
+      localStorage.setItem('fa_mode_' + currentProjectId.value, routeVal)
+      centerView.value = 'chat'
+      return
+    }
+
     _abortCurrentStream()
     writingAbort?.()
     isWritingChapter.value = false
@@ -1098,6 +1120,7 @@ export const useAppStore = defineStore('app', () => {
     if (patch.currentAssistantId !== undefined) currentAssistantId.value = patch.currentAssistantId
 
     if ((routeVal === 'workspace' || routeVal === 'writing') && params.currentProjectId) {
+      localStorage.setItem('fa_mode_' + params.currentProjectId, routeVal)
       const pid = params.currentProjectId
       await Promise.allSettled([
         fetchConversations(pid),
@@ -1217,6 +1240,8 @@ export const useAppStore = defineStore('app', () => {
     resumeBatch,
     stopBatchWriting,
     sidebarCollapsed,
+    lastProjectMode,
+    openProject,
     toggleSidebar,
     openWriting,
     stopWritingChapter,
