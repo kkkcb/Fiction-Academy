@@ -5,10 +5,15 @@ import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import type { WorkspaceItem } from '../types'
 import { POINT_NAV, STATUS_LABELS, relativeTime, formatMd } from '../utils/format'
-import { BrainCircuit, ClipboardList, Search, BookOpen, CircleX, CircleAlert, CircleHelp, CircleCheck, Circle } from 'lucide-vue-next'
+import { BrainCircuit, ClipboardList, Search, BookOpen, CircleX, CircleAlert, CircleHelp, CircleCheck, Circle, Rocket, PenLine } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
+  batchWriting,
+  batchTarget,
+  batchDone,
+  batchPaused,
+  batchHint,
   currentProjectId,
   currentProject,
   chapters,
@@ -54,6 +59,49 @@ const skeletonDone = computed(() => {
 const nextNumber = computed(() =>
   chapters.value.length ? (chapters.value[chapters.value.length - 1].chapter_number || chapters.value.length) + 1 : 1,
 )
+
+// ===== 连续写作（Copilot 式目标） =====
+const showBatch = ref(false)
+const batchCount = ref(3)
+const batchGoal = ref('')
+const batchReview = ref(true)
+
+function openBatch() {
+  batchCount.value = 3
+  batchGoal.value = ''
+  batchReview.value = true
+  showBatch.value = true
+}
+
+function startBatch() {
+  if (!currentProjectId.value || batchCount.value < 1) return
+  showBatch.value = false
+  store.startBatchWriting(currentProjectId.value, batchCount.value, batchGoal.value.trim(), batchReview.value)
+}
+
+// ===== 章节审阅：编辑正文 =====
+const editingChapter = ref(false)
+const editContent = ref('')
+const editSaving = ref(false)
+
+function startChapterEdit() {
+  if (!selected.value) return
+  editingChapter.value = true
+  editContent.value = selected.value.content || ''
+}
+
+async function saveChapterEdit() {
+  if (!selected.value || !currentProjectId.value) return
+  editSaving.value = true
+  try {
+    await store.updateWorkspaceItem(selected.value.id, { content: editContent.value })
+    editingChapter.value = false
+    await store.fetchWorkspaceItems(currentProjectId.value)
+    store.notifySuccess('章节修改已保存')
+  } finally {
+    editSaving.value = false
+  }
+}
 
 // ===== 写作 =====
 function writeNext() {
@@ -118,7 +166,10 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
       </div>
       <div class="wh-actions">
         <template v-if="skeletonDone.ready">
-          <button v-if="!isWritingChapter" class="btn btn-primary" aria-label="写下一章" @click="writeNext">
+          <button v-if="!isWritingChapter && !batchWriting" class="btn" aria-label="连续写作" title="设定目标，AI 连续写多章" @click="openBatch">
+            <Rocket :size="14" :stroke-width="1.75" /> 连续写作
+          </button>
+          <button v-if="!isWritingChapter && !batchWriting" class="btn btn-primary" aria-label="写下一章" @click="writeNext">
             <BrainCircuit :size="14" :stroke-width="1.75" style="vertical-align:-2px" /> 写第 {{ nextNumber }} 章
           </button>
           <button v-else class="btn" aria-label="停止写作" @click="store.stopWritingChapter()">■ 停止</button>
@@ -132,6 +183,22 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
         <span v-else class="wh-not-ready">骨架未完成，先去创作流程把五个点位定稿</span>
       </div>
     </header>
+
+    <!-- 连续写作：进度/审阅横幅 -->
+    <div v-if="batchWriting" class="batch-bar">
+      <template v-if="batchPaused">
+        <span class="batch-text">
+          第 {{ batchDone }}/{{ batchTarget }} 章完成——请审阅下方内容（可编辑），满意后继续
+        </span>
+        <button class="btn btn-primary btn-sm" aria-label="继续写下一章" @click="store.resumeBatch()">继续下一章</button>
+        <button class="btn btn-sm" aria-label="中止连续写作" @click="store.stopBatchWriting()">中止</button>
+      </template>
+      <template v-else>
+        <span class="batch-text">连续写作 {{ batchDone }}/{{ batchTarget }} · {{ isWritingChapter ? '正在写下一章…' : '准备中…' }}<span v-if="batchHint">（目标：{{ batchHint.slice(0, 24) }}）</span></span>
+        <button class="btn btn-sm" aria-label="停止连续写作" @click="store.stopBatchWriting()">停止</button>
+      </template>
+      <div class="batch-progress"><div class="batch-fill" :style="{ width: (batchDone / Math.max(batchTarget, 1) * 100) + '%' }"></div></div>
+    </div>
 
     <div class="writing-body">
       <aside class="chapter-list">
@@ -198,11 +265,21 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
             <div v-show="showPlan" class="plan-body markdown-body" v-html="formatMd(selectedPlan.content || '')"></div>
           </div>
 
-          <article class="reader-content">
+          <template v-if="editingChapter">
+            <textarea v-model="editContent" class="chapter-edit-area" rows="18" aria-label="编辑章节内容"></textarea>
+            <div class="reader-actions">
+              <button class="btn btn-primary" :disabled="editSaving" @click="saveChapterEdit">{{ editSaving ? '保存中…' : '保存修改' }}</button>
+              <button class="btn" :disabled="editSaving" @click="editingChapter = false">取消</button>
+            </div>
+          </template>
+          <article v-else class="reader-content">
             <div v-html="renderProse(selected.content)"></div>
           </article>
 
           <div class="reader-actions">
+            <button v-if="!editingChapter" class="btn" aria-label="编辑本章" title="逐段审阅/修改本章内容" @click="startChapterEdit">
+              <PenLine :size="13" :stroke-width="1.75" /> 编辑
+            </button>
             <button class="btn" :disabled="reviewing" @click="runReview">
               <Search v-if="!reviewing" :size="13" :stroke-width="1.75" />
               {{ reviewing ? '审校中…' : '一致性审校' }}
@@ -235,6 +312,28 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
       </main>
     </div>
   </div>
+
+    <!-- 连续写作目标对话框 -->
+    <div v-if="showBatch" class="modal-overlay show" @click.self="showBatch = false">
+      <div class="modal-card">
+        <h3>连续写作目标</h3>
+        <label class="pin-label">连续写几章</label>
+        <input v-model.number="batchCount" type="number" min="1" max="20" class="modal-input" />
+        <label class="pin-label">目标 / 要求（自然语言，会作为每章的写作要求）</label>
+        <textarea v-model="batchGoal" class="modal-input batch-goal" rows="4"
+          placeholder="例：接下来重点写血神教与青石镇的正面冲突，节奏加快，每章结尾留强钩子"></textarea>
+        <label class="batch-check">
+          <input v-model="batchReview" type="checkbox" />
+          每章完成后暂停，等我审阅再继续（取消则一口气写完）
+        </label>
+        <div class="modal-actions">
+          <button class="btn" @click="showBatch = false">取消</button>
+          <button class="btn btn-primary" :disabled="!batchCount || batchCount < 1" @click="startBatch">
+            <Rocket :size="13" :stroke-width="1.75" /> 开始
+          </button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <style scoped>
@@ -520,4 +619,58 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
   font-size: 12px;
 }
 .reader-empty-icon { font-size: 32px; opacity: 0.5; }
+</style>
+
+<style scoped>
+.batch-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 16px 14px;
+  border-bottom: 1px dashed var(--border-subtle);
+  background: var(--accent-lighter);
+}
+.batch-text { font-size: 12px; color: var(--text-primary); }
+.batch-progress {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 6px;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+.batch-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-full);
+  transition: width 0.4s var(--ease-out);
+}
+.batch-goal { min-height: 90px; resize: vertical; }
+.batch-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 8px 0 4px;
+}
+.chapter-edit-area {
+  width: 100%;
+  min-height: 320px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-serif), serif;
+  font-size: 14px;
+  line-height: 2;
+  padding: 14px 16px;
+  resize: vertical;
+  outline: none;
+}
+.chapter-edit-area:focus { border-color: var(--accent); }
 </style>

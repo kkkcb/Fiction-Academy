@@ -322,7 +322,13 @@ CHAPTER_WRITER_SYSTEM_PROMPT = """你是一位顶尖网文作者，正在为番�
 5. 开篇直接进场景，禁止总结式开场（"上回说到"、"且说"都禁止）
 6. 每章 2500-4000 字，段落自然，对话推动剧情，叙述与描写交替
 7. 结尾必须落在断章钩子上，戛然而止，让读者忍不住点下一章
-8. 输出正文本身，不要章节号、不要标题、不要任何解释性文字"""
+8. 输出正文本身，不要章节号、不要标题、不要任何解释性文字
+
+文风铁律（参考职业写手的反AI味守则）：
+- 禁止翻译腔、禁止AI味：不用"仿佛在诉说着什么"“空气中弥漫着”“不禁”这类空洞套话
+- 禁止降智推进：反派和配角不犯蠢，冲突靠利益与信息差推动
+- 多用具体名词和动作，少用形容词堆叠；对话要有口语的毛边，不要人人腔调相同
+- 像一个老练的网文作者在码字，而不是AI在完成任务"""
 
 
 class WriteChapterRequest(BaseModel):
@@ -459,26 +465,35 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
         "content": "请依据以上全部约束，写出本章正文。" + hint_block,
     }]
 
-    # --- 3. 流式执笔 ---
+    # --- 3. 流式执笔（网关攒包下思考可能吃光 token 导致正文为空 → 自动重试） ---
     full_text = ""
-    try:
-        async for kind, chunk in chat_stream(
-            messages,
-            system_prompt=CHAPTER_WRITER_SYSTEM_PROMPT + "\n\n" + "\n\n".join(context_blocks),
-            temperature=0.85,
-        ):
-            if kind == "reasoning":
-                continue  # 阅读器只显示正文
-            full_text += chunk
-            yield emit({"content": chunk})
-    except LLMError as e:
-        if full_text.strip():
-            await _save_chapter(db, project_id, chapter_number, chapter_title, full_text + "\n\n[本章生成中断]", "draft")
-        yield emit({"error": f"生成失败: {e}"})
-        return
+    for attempt in range(3):
+        try:
+            async for kind, chunk in chat_stream(
+                messages,
+                system_prompt=CHAPTER_WRITER_SYSTEM_PROMPT + "\n\n" + "\n\n".join(context_blocks),
+                temperature=1.0,
+                disable_thinking=True,  # 网关攒包下思考会吃光 token 导致正文为空
+            ):
+                if kind == "reasoning":
+                    continue  # 阅读器只显示正文
+                full_text += chunk
+                yield emit({"content": chunk})
+            if full_text.strip():
+                break
+        except LLMError as e:
+            if full_text.strip():
+                await _save_chapter(db, project_id, chapter_number, chapter_title, full_text + "\n\n[本章生成中断]", "draft")
+                yield emit({"error": f"生成失败: {e}"})
+                return
+            if attempt == 2:
+                yield emit({"error": f"生成失败: {e}"})
+                return
+        if not full_text.strip() and attempt < 2:
+            yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title, "message": f"正文为空，重试第 {attempt + 1}/2 次…"})
 
     if not full_text.strip():
-        yield emit({"error": "模型未返回内容，请重试"})
+        yield emit({"error": "多次重试后模型仍未返回正文，请稍后再试"})
         return
 
     # --- 4. 存档 + 钩子（编年史/摘要，后台异步） ---

@@ -100,7 +100,8 @@ async def _sleep_backoff(attempt: int) -> None:
 
 
 async def chat_stream(messages: list[dict], system_prompt: str | None = None,
-                      model: str = "", temperature: float = 0.8):
+                      model: str = "", temperature: float = 0.8,
+                      disable_thinking: bool = False):
     """流式生成。yield (kind, text)，kind ∈ {'reasoning', 'content'}。
 
     首个 chunk 产出前失败会重试一次（含 usage 不确定的风险）；
@@ -114,12 +115,14 @@ async def chat_stream(messages: list[dict], system_prompt: str | None = None,
     emitted = False
     for attempt in range(2):
         try:
+            extra = {"extra_body": {"thinking": {"type": "disabled"}}} if disable_thinking else {}
             stream = await client.chat.completions.create(
                 model=model or DEFAULT_MODEL,
                 messages=full_messages,
                 stream=True,
                 temperature=temperature,
                 max_tokens=LLM_MAX_TOKENS,
+                **extra,
             )
             async for chunk in stream:
                 if not chunk.choices:

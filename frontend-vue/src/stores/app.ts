@@ -458,6 +458,56 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // ===== 连续写作（Copilot 式）：自然语言目标 → 逐章生成 → 按章审阅 =====
+  const batchWriting = ref(false)
+  const batchTarget = ref(0)
+  const batchDone = ref(0)
+  const batchHint = ref('')
+  const batchPauseForReview = ref(true)
+  const batchPaused = ref(false)   // 每章完成后暂停，等用户审阅
+  const batchStopping = ref(false)
+  let _resumeResolve: (() => void) | null = null
+  let _batchAbort = false
+
+  async function startBatchWriting(projectId: ID, target: number, hint: string, pauseForReview: boolean) {
+    if (batchWriting.value || isWritingChapter.value) return
+    _batchAbort = false
+    batchWriting.value = true
+    batchTarget.value = target
+    batchDone.value = 0
+    batchHint.value = hint
+    batchPauseForReview.value = pauseForReview
+    centerView.value = 'writing'
+    for (let i = 0; i < target; i++) {
+      if (_batchAbort) break
+      const ok = await writeNextChapter(projectId, false, hint)
+      if (!ok) break
+      batchDone.value = i + 1
+      if (pauseForReview && i < target - 1 && !_batchAbort) {
+        batchPaused.value = true
+        await new Promise<void>(r => { _resumeResolve = r })
+        batchPaused.value = false
+      }
+    }
+    batchWriting.value = false
+    batchPaused.value = false
+    if (!_batchAbort && batchDone.value >= target) notifySuccess(`目标达成：已连续完成 ${target} 章`)
+  }
+
+  function resumeBatch() {
+    batchPaused.value = false
+    _resumeResolve?.()
+    _resumeResolve = null
+  }
+
+  function stopBatchWriting() {
+    _batchAbort = true
+    stopWritingChapter()
+    batchPaused.value = false
+    _resumeResolve?.()
+    _resumeResolve = null
+  }
+
   function openWriting() {
     centerView.value = centerView.value === 'writing' ? 'chat' : 'writing'
   }
@@ -466,8 +516,14 @@ export const useAppStore = defineStore('app', () => {
     writingAbort?.()
   }
 
-  async function writeNextChapter(projectId: ID, regenerate = false, hint = '') {
-    if (isWritingChapter.value) return
+  function writeNextChapter(projectId: ID, regenerate = false, hint = ''): Promise<boolean> {
+    if (isWritingChapter.value) return Promise.resolve(false)
+    return new Promise(resolve => {
+      _writeRun(projectId, regenerate, hint, resolve)
+    })
+  }
+
+  async function _writeRun(projectId: ID, regenerate: boolean, hint: string, done: (ok: boolean) => void) {
     isWritingChapter.value = true
     writingContent.value = ''
     writingChapterNumber.value = null
@@ -490,6 +546,7 @@ export const useAppStore = defineStore('app', () => {
         notifySuccess('本章已完成并存档，编年史已更新')
         await fetchWorkspaceItems(projectId)
         await fetchKgGraph(projectId).catch(() => {})
+        done(true)
       },
       onError: (err, partial) => {
         isWritingChapter.value = false
@@ -500,6 +557,7 @@ export const useAppStore = defineStore('app', () => {
           error.value = `章节生成失败：${err.message}`
         }
         if (partial) fetchWorkspaceItems(projectId)
+        done(false)
       },
     })
   }
@@ -1136,6 +1194,15 @@ export const useAppStore = defineStore('app', () => {
     writingContent,
     writingChapterNumber,
     writingChapterTitle,
+    batchWriting,
+    batchTarget,
+    batchDone,
+    batchHint,
+    batchPaused,
+    batchPauseForReview,
+    startBatchWriting,
+    resumeBatch,
+    stopBatchWriting,
     openWriting,
     stopWritingChapter,
     writeNextChapter,

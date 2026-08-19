@@ -28,8 +28,8 @@ def write_stubs(monkeypatch):
             "foreshadows_payoff": [],
         }
 
-    async def fake_stream(messages, system_prompt=None, model="", temperature=0.8):
-        calls["stream"].append({"messages": messages, "system_prompt": system_prompt})
+    async def fake_stream(messages, system_prompt=None, model="", temperature=0.8, disable_thinking=False):
+        calls["stream"].append({"messages": messages, "system_prompt": system_prompt, "disable_thinking": disable_thinking})
         for t in ["暮色四合，青石镇的炊烟刚起。", "顾平安把最后一把灵茶收进竹匾。"]:
             yield ("content", t)
 
@@ -65,6 +65,7 @@ async def test_write_stream_creates_plan_and_chapter(client, project_id, write_s
     assert done and done[0]["chapter_number"] == 1
 
     # 执笔 prompt 包含骨架约束与章纲
+    assert write_stubs["stream"][0].get("disable_thinking") is True
     sys_prompt = write_stubs["stream"][0]["system_prompt"]
     assert "守一道" in sys_prompt
     assert "青石镇来了个懒郎中" in sys_prompt
