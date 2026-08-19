@@ -320,7 +320,7 @@ CHAPTER_WRITER_SYSTEM_PROMPT = """你是一位顶尖网文作者，正在为番�
 3. 【近章剧情】是已经发生的事，不能矛盾、不能重复交代
 4. 【既定设定】中的事实（身份/关系/境界/地名）必须保持一致
 5. 开篇直接进场景，禁止总结式开场（"上回说到"、"且说"都禁止）
-6. 每章 2500-4000 字，段落自然，对话推动剧情，叙述与描写交替
+6. 字数硬性要求：以章纲标注的【目标字数】为准（默认 3200 字），允许上下浮动 10%；不足下限视为未完成。段落自然，对话推动剧情，叙述与描写交替
 7. 结尾必须落在断章钩子上，戛然而止，让读者忍不住点下一章
 8. 输出正文本身，不要章节号、不要标题、不要任何解释性文字
 
@@ -490,8 +490,13 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
             if attempt == 2:
                 yield emit({"error": f"生成失败: {e}"})
                 return
-        if not full_text.strip() and attempt < 2:
-            yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title, "message": f"正文为空，重试第 {attempt + 1}/2 次…"})
+        min_words = int(plan_meta.get("estimated_words") or 3200) * 85 // 100
+        too_short = 0 < len(full_text.strip()) < min_words
+        if (not full_text.strip() or too_short) and attempt < 2:
+            why = f"正文为空，重试第 {attempt + 1}/2 次…" if not full_text.strip() else (
+                f"字数不足（{len(full_text.strip())}/{min_words} 下限），重写第 {attempt + 1}/2 次…")
+            full_text = ""
+            yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title, "message": why})
 
     if not full_text.strip():
         yield emit({"error": "多次重试后模型仍未返回正文，请稍后再试"})

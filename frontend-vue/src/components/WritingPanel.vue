@@ -32,6 +32,22 @@ const selected = computed<WorkspaceItem | null>(() =>
   chapters.value.find(c => c.id === selectedId.value) || null,
 )
 
+function planTypesOf(chapterNo: number | null | undefined): string[] {
+  if (!chapterNo) return []
+  const plan = workspaceItems.value.find(
+    w => w.item_type === 'chapter_plan' && w.chapter_number === chapterNo,
+  )
+  if (!plan) return []
+  try {
+    const meta = JSON.parse(plan.metadata || '{}') as Record<string, unknown>
+    const raw = meta.chapter_types ?? meta.chapter_type ?? []
+    const list = Array.isArray(raw) ? raw : [raw]
+    return list.map(String).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
 const selectedPlan = computed<WorkspaceItem | null>(() => {
   if (!selected.value?.chapter_number) return null
   return workspaceItems.value.find(
@@ -213,6 +229,7 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
             @click="selectedId = c.id"
           >
             <span class="ch-num">第{{ c.chapter_number }}章</span>
+            <span v-for="t in planTypesOf(c.chapter_number)" :key="t" class="ch-type">{{ t }}</span>
             <span class="ch-title">{{ c.title || '未命名' }}</span>
             <span class="ch-words">{{ wordCountOf(c).toLocaleString() }}字</span>
             <span v-if="c.status === 'draft'" class="ch-status">草稿</span>
@@ -683,4 +700,17 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
 
 <style scoped>
 .writing-header.standalone { justify-content: flex-end; }
+</style>
+
+<style scoped>
+.ch-type {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-lighter);
+  border-radius: var(--radius-full);
+  padding: 0 6px;
+  line-height: 16px;
+}
 </style>

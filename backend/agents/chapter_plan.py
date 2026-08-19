@@ -84,7 +84,8 @@ async def generate_chapter_plan(
   "threads": ["推进的主线/感情线/暗线"],
   "foreshadows_setup": ["本章新埋设的伏笔（如有）"],
   "foreshadows_payoff": ["本章回收的伏笔（必须来自上面的待回收列表）"],
-  "estimated_words": 3000
+  "chapter_types": ["本章粗分类（1-3个，按主次排序）：埋伏笔/推剧情/爽点爆发/高潮/过渡铺垫/人物塑造"],
+  "estimated_words": 3200
 }}"""
 
     messages = [{"role": "user", "content": prompt}]
@@ -102,9 +103,15 @@ def format_chapter_plan_markdown(plan: dict, chapter_number: int) -> tuple[str, 
     if isinstance(reward, str):
         reward = {"type": "", "design": reward}
 
+    raw_types = plan.get("chapter_types") or plan.get("chapter_type") or []
+    chapter_types = [str(t).strip() for t in (raw_types if isinstance(raw_types, list) else [raw_types]) if str(t).strip()]
+    est_words = plan.get("estimated_words", 3200)
+    type_line = (f"**本章类型**：{' + '.join(chapter_types)} | **目标字数**：{est_words}字"
+                 if chapter_types else "")
     lines = [
         f"# 第{chapter_number}章：{title}",
         "",
+        type_line,
         f"**视点人物**：{plan.get('pov', '')}",
         "",
         f"**核心冲突**：{plan.get('core_conflict', '')}",
@@ -142,6 +149,7 @@ def format_chapter_plan_markdown(plan: dict, chapter_number: int) -> tuple[str, 
         "threads": threads,
         "foreshadows_setup": setup,
         "foreshadows_payoff": payoff,
-        "estimated_words": plan.get("estimated_words", 3000),
+        "chapter_types": chapter_types,
+        "estimated_words": plan.get("estimated_words", 3200),
     }
     return content, metadata
