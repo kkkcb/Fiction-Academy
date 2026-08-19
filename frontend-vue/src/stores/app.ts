@@ -508,6 +508,14 @@ export const useAppStore = defineStore('app', () => {
     _resumeResolve = null
   }
 
+  // ===== 侧栏折叠（Notion 式：图标栏 + Ctrl+\ 快捷键 + 状态记忆） =====
+  const sidebarCollapsed = ref(localStorage.getItem('fa_sidebar_collapsed') === '1')
+
+  function toggleSidebar() {
+    sidebarCollapsed.value = !sidebarCollapsed.value
+    localStorage.setItem('fa_sidebar_collapsed', sidebarCollapsed.value ? '1' : '0')
+  }
+
   function openWriting() {
     centerView.value = centerView.value === 'writing' ? 'chat' : 'writing'
   }
@@ -1203,6 +1211,8 @@ export const useAppStore = defineStore('app', () => {
     startBatchWriting,
     resumeBatch,
     stopBatchWriting,
+    sidebarCollapsed,
+    toggleSidebar,
     openWriting,
     stopWritingChapter,
     writeNextChapter,

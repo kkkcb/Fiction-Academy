@@ -6,7 +6,7 @@ import { useAppStore } from '../stores/app'
 import { POINT_NAV, relativeTime } from '../utils/format'
 import IconCheck from './icons/IconCheck.vue'
 import IconTrash from './icons/IconTrash.vue'
-import { ChevronLeft, Plus, BrainCircuit } from 'lucide-vue-next'
+import { ChevronLeft, Plus, BrainCircuit, PanelLeftClose, PanelLeftOpen, MessageSquareText, ChevronDown } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -21,6 +21,7 @@ const {
   currentAssistantId,
   centerView,
   chapters,
+  sidebarCollapsed,
 } = storeToRefs(store)
 
 const currentProject = computed(() =>
@@ -28,6 +29,9 @@ const currentProject = computed(() =>
 )
 
 const isPointMode = computed(() => activeMode.value === 'point' && !!currentPoint.value)
+
+// 分区折叠（创作流程 / 自由对话）
+const sectionCollapsed = ref({ points: false, convs: false })
 
 const freeConversations = computed(() => conversations.value.filter(c => !c.point))
 const legacyPointConversations = computed(() => conversations.value.filter(c => c.point))
@@ -95,18 +99,58 @@ function onSelectAssistant(e: Event) {
 </script>
 
 <template>
-  <aside class="sidebar-left">
+  <aside class="sidebar-left" :class="{ collapsed: sidebarCollapsed }">
+
+    <!-- 折叠态：图标栏（悬浮显示提示） -->
+    <div v-if="sidebarCollapsed" class="sidebar-rail">
+      <button class="rail-btn" data-tip="返回项目列表" aria-label="返回项目列表" @click="goBack">
+        <ChevronLeft :size="16" :stroke-width="1.75" />
+      </button>
+      <div class="rail-avatar" data-tip="展开侧栏">{{ (currentProject?.name || '未').slice(0, 1) }}</div>
+      <div class="rail-sep"></div>
+      <button
+        v-for="p in POINT_NAV"
+        :key="p.key"
+        class="rail-btn rail-dot"
+        :class="[pointStatus(p.key), { active: currentPoint === p.key && isPointMode }]"
+        :data-tip="`${p.label} · ${pointStatus(p.key) === 'done' ? '已完成' : pointStatus(p.key) === 'active' ? '进行中' : '未开始'}`"
+        :aria-label="p.label"
+        @click="store.selectPoint(currentProjectId!, p.key)"
+      >
+        <IconCheck v-if="pointStatus(p.key) === 'done'" :size="14" :stroke-width="2" />
+        <span v-else class="rail-dot-empty"></span>
+      </button>
+      <button class="rail-btn" :class="{ active: centerView === 'writing' }" data-tip="小说写作" aria-label="进入小说写作" @click="store.openWriting()">
+        <BrainCircuit :size="16" :stroke-width="1.75" />
+      </button>
+      <div class="rail-sep"></div>
+      <button class="rail-btn" data-tip="自由对话（展开侧栏查看）" aria-label="展开侧栏查看对话" @click="store.toggleSidebar()">
+        <MessageSquareText :size="16" :stroke-width="1.75" />
+      </button>
+      <button class="rail-btn rail-expand" data-tip="展开侧栏（Ctrl+\）" aria-label="展开侧栏" @click="store.toggleSidebar()">
+        <PanelLeftOpen :size="16" :stroke-width="1.75" />
+      </button>
+    </div>
+
+    <template v-else>
     <div class="glass-header">
       <button class="btn btn-sm" title="返回项目列表" aria-label="返回项目列表" @click="goBack">
         <ChevronLeft :size="14" :stroke-width="1.75" />
       </button>
       <span class="glass-title">{{ currentProject?.name || '未命名' }}</span>
+      <button class="btn btn-sm sidebar-collapse-btn" title="收起侧栏（Ctrl+\）" aria-label="收起侧栏" @click="store.toggleSidebar()">
+        <PanelLeftClose :size="14" :stroke-width="1.75" />
+      </button>
     </div>
 
     <div class="point-nav">
-      <div class="point-nav-label">创作流程</div>
+      <div class="point-nav-label section-head" @click="sectionCollapsed.points = !sectionCollapsed.points">
+        <ChevronDown :size="12" :stroke-width="1.75" class="section-arrow" :class="{ folded: sectionCollapsed.points }" />
+        创作流程
+      </div>
       <div
         v-for="p in POINT_NAV"
+        v-show="!sectionCollapsed.points"
         :key="p.key"
         class="point-nav-item"
         :class="{ active: currentPoint === p.key && isPointMode }"
@@ -123,6 +167,7 @@ function onSelectAssistant(e: Event) {
       </div>
 
       <button
+        v-show="!sectionCollapsed.points"
         class="write-nav-item"
         :class="{ active: centerView === 'writing' }"
         aria-label="进入小说写作"
@@ -139,8 +184,11 @@ function onSelectAssistant(e: Event) {
     <div class="sidebar-divider"></div>
 
     <div class="conv-section">
-      <div class="conv-header">
-        <span>自由对话</span>
+      <div class="conv-header section-head" @click.self="sectionCollapsed.convs = !sectionCollapsed.convs">
+        <span class="section-head-inner" @click="sectionCollapsed.convs = !sectionCollapsed.convs">
+          <ChevronDown :size="12" :stroke-width="1.75" class="section-arrow" :class="{ folded: sectionCollapsed.convs }" />
+          自由对话
+        </span>
         <button class="btn btn-sm" title="新建对话" aria-label="新建对话" @click="handleNewConv">
           <Plus :size="12" :stroke-width="2" />
         </button>
@@ -148,6 +196,7 @@ function onSelectAssistant(e: Event) {
 
       <div
         v-for="c in freeConversations"
+        v-show="!sectionCollapsed.convs"
         :key="c.id"
         class="conv-item"
         :class="{ active: activeMode === 'free' && currentConversationId === c.id }"
@@ -174,7 +223,7 @@ function onSelectAssistant(e: Event) {
         </template>
       </div>
 
-      <div v-if="freeConversations.length === 0" class="conv-empty">
+      <div v-if="freeConversations.length === 0 && !sectionCollapsed.convs" class="conv-empty">
         暂无自由对话<br />点击右上角 + 随时开聊
       </div>
 
@@ -201,6 +250,7 @@ function onSelectAssistant(e: Event) {
         <option v-for="a in assistants" :key="a.id" :value="a.id">{{ a.name }}</option>
       </select>
     </div>
+      </template>
   </aside>
 </template>
 

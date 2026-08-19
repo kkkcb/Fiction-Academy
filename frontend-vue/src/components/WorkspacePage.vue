@@ -22,6 +22,7 @@ const {
   centerView,
   points,
   isArchiving,
+  sidebarCollapsed,
 } = storeToRefs(store)
 
 const currentProject = computed(() =>
@@ -104,6 +105,15 @@ onMounted(() => {
   }
 })
 
+function onSidebarShortcut(e: KeyboardEvent) {
+  if (e.ctrlKey && e.key === '\\') {
+    e.preventDefault()
+    store.toggleSidebar()
+  }
+}
+onMounted(() => document.addEventListener('keydown', onSidebarShortcut))
+onUnmounted(() => document.removeEventListener('keydown', onSidebarShortcut))
+
 onUnmounted(() => {
   document.removeEventListener('mousemove', onResizing)
   document.removeEventListener('mouseup', stopResize)
@@ -117,9 +127,10 @@ async function handleArchive() {
 
 <template>
   <div class="workspace-page workspace-layout">
-    <Sidebar ref="leftRef" :style="{ width: leftWidth + 'px' }" />
+    <Sidebar ref="leftRef" :style="{ width: (sidebarCollapsed ? 56 : leftWidth) + 'px' }" />
 
     <div
+      v-if="!sidebarCollapsed"
       class="resize-handle"
       :class="{ active: draggingSide === 'left' }"
       @mousedown="startResize('left', $event)"
