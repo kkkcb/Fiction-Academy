@@ -137,6 +137,30 @@ python scripts/regression.py --with-llm # 含真实聊天流冒烟
 新建/重命名/删除对话、消息右键删除、添加/编辑/审批/锁定/解锁/删除设定、
 知识图谱实体增删、写作守卫（无骨架 409）、各类异常路径（404/409/422）。
 
+## 换机续写（数据随私有仓库走）
+
+小说数据（全部项目/章节/素材库）存于 `data/fiction_academy.db`，已随仓库同步（WAL 运行时文件除外）。
+
+**写完内容后推送数据：**
+```bash
+python scripts/push_data.py "备注"   # 自动 checkpoint + commit + push
+```
+
+**在新机器上继续：**
+```bash
+git clone https://github.com/kkkcb/Fiction-Academy.git
+cd Fiction-Academy
+# 1) 拷贝 .env.local（只有一行 API Key，不在 git 里，从旧机器复制或重写）
+# 2) 安装依赖并启动（Windows 双击 启动本地版.bat），或：
+pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+**注意：**
+- 数据库是二进制文件**不能合并**——不要两台机器同时写作后各自 push；固定"一台写完 push、另一台 pull 再写"
+- API Key 永远不进 git（含 Token 的 .env.local 已被忽略）
+- 服务器（YOUR_VPS_IP）的数据库独立于 git；如需把服务器数据拉回本地：`scp root@YOUR_VPS_IP:/opt/fiction-academy/data/fiction_academy.db data/`
+
 ## License
 
 MIT
