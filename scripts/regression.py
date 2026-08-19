@@ -15,7 +15,8 @@ import uuid
 import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")
-BASE = "http://localhost:8000"
+import os
+BASE = os.getenv("FA_BASE", "http://localhost:8000")
 
 PASS, FAIL = 0, 0
 
@@ -28,7 +29,26 @@ def check(name: str, cond: bool, detail: str = ""):
     FAIL += not cond
 
 
+def _cleanup_leftovers():
+    """防泄漏兜底：删除任何残留的「回归测试-*」项目（即使回归中途崩溃也不留在用户列表）。"""
+    try:
+        c = httpx.Client(timeout=30, trust_env=False)
+        for p in c.get(f"{BASE}/api/projects").json():
+            if str(p.get("name", "")).startswith("回归测试"):
+                c.delete(f"{BASE}/api/projects/{p['id']}")
+                print(f"  [兜底清理] 删除残留测试项目 {p['name']}")
+    except Exception as e:
+        print("  [兜底清理] 跳过：", e)
+
+
 def main():
+    try:
+        _run()
+    finally:
+        _cleanup_leftovers()
+
+
+def _run():
     with_llm = "--with-llm" in sys.argv
     t0 = time.time()
     c = httpx.Client(timeout=60, trust_env=False)

@@ -10,7 +10,7 @@ python -c "import fastapi, uvicorn" 2>nul || (
 )
 
 rem 3 秒后自动打开浏览器
-start "" cmd /c "timeout /t 3 /nobreak >nul & start http://localhost:8000"
+start "" cmd /c "timeout /t 3 /nobreak >nul & start http://localhost:%PORT%"
 
 echo ================================================
 echo   本地版启动中，浏览器马上会自动打开
@@ -20,5 +20,9 @@ echo   [停止本地] 直接关掉这个窗口
 echo   [服务器版] 24小时在 http://YOUR_VPS_IP/
 echo              不受本地开关机影响
 echo ================================================
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+rem 8000 被其他项目占用时自动改用 8100
+set PORT=8000
+netstat -ano | findstr ":8000 " | findstr "LISTENING" >nul 2>&1 && set PORT=8100
+echo 使用端口 %PORT%（浏览器将自动打开）
+python -m uvicorn backend.main:app --host 127.0.0.1 --port %PORT% --reload
 pause
