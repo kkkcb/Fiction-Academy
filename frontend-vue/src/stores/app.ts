@@ -469,7 +469,7 @@ export const useAppStore = defineStore('app', () => {
   let _resumeResolve: (() => void) | null = null
   let _batchAbort = false
 
-  async function startBatchWriting(projectId: ID, target: number, hint: string, pauseForReview: boolean) {
+  async function startBatchWriting(projectId: ID, target: number, hint: string, pauseForReview: boolean, fast = false) {
     if (batchWriting.value || isWritingChapter.value) return
     _batchAbort = false
     batchWriting.value = true
@@ -480,7 +480,7 @@ export const useAppStore = defineStore('app', () => {
     centerView.value = 'writing'
     for (let i = 0; i < target; i++) {
       if (_batchAbort) break
-      const ok = await writeNextChapter(projectId, false, hint)
+      const ok = await writeNextChapter(projectId, false, hint, fast)
       if (!ok) break
       batchDone.value = i + 1
       if (pauseForReview && i < target - 1 && !_batchAbort) {
@@ -538,21 +538,21 @@ export const useAppStore = defineStore('app', () => {
     writingAbort?.()
   }
 
-  function writeNextChapter(projectId: ID, regenerate = false, hint = ''): Promise<boolean> {
+  function writeNextChapter(projectId: ID, regenerate = false, hint = '', fast = false): Promise<boolean> {
     if (isWritingChapter.value) return Promise.resolve(false)
     return new Promise(resolve => {
-      _writeRun(projectId, regenerate, hint, resolve)
+      _writeRun(projectId, regenerate, hint, fast, resolve)
     })
   }
 
-  async function _writeRun(projectId: ID, regenerate: boolean, hint: string, done: (ok: boolean) => void) {
+  async function _writeRun(projectId: ID, regenerate: boolean, hint: string, fast: boolean, done: (ok: boolean) => void) {
     isWritingChapter.value = true
     writingContent.value = ''
     writingChapterNumber.value = null
     writingChapterTitle.value = ''
     writingPhase.value = regenerate ? '正在准备重写本章…' : '正在准备写作…'
     centerView.value = 'writing'
-    writingAbort = api.streamWriteChapter(projectId, { user_hint: hint, regenerate }, {
+    writingAbort = api.streamWriteChapter(projectId, { user_hint: hint, regenerate, fast }, {
       onPhase: meta => {
         writingPhase.value = meta.message || ''
         if (meta.chapter_number) writingChapterNumber.value = meta.chapter_number

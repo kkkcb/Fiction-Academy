@@ -66,6 +66,7 @@ const showBatch = ref(false)
 const batchCount = ref(3)
 const batchGoal = ref('')
 const batchReview = ref(true)
+const batchFast = ref(false)
 
 function openBatch() {
   batchCount.value = 3
@@ -77,7 +78,7 @@ function openBatch() {
 function startBatch() {
   if (!currentProjectId.value || batchCount.value < 1) return
   showBatch.value = false
-  store.startBatchWriting(currentProjectId.value, batchCount.value, batchGoal.value.trim(), batchReview.value)
+  store.startBatchWriting(currentProjectId.value, batchCount.value, batchGoal.value.trim(), batchReview.value, batchFast.value)
 }
 
 // ===== 章节审阅：编辑正文 =====
@@ -326,6 +327,10 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
         <label class="batch-check">
           <input v-model="batchReview" type="checkbox" />
           每章完成后暂停，等我审阅再继续（取消则一口气写完）
+        </label>
+        <label class="batch-check">
+          <input v-model="batchFast" type="checkbox" />
+          快速模式（关思考，约1分钟/章；默认精细模式约4-5分钟/章，质量更佳）
         </label>
         <div class="modal-actions">
           <button class="btn" @click="showBatch = false">取消</button>

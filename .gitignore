@@ -47,3 +47,4 @@ build/
 .verify_pid.txt
 logs_*.b64
 logs_*.md
+compare_*.txt

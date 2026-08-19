@@ -65,7 +65,7 @@ async def test_write_stream_creates_plan_and_chapter(client, project_id, write_s
     assert done and done[0]["chapter_number"] == 1
 
     # 执笔 prompt 包含骨架约束与章纲
-    assert write_stubs["stream"][0].get("disable_thinking") is True
+    assert write_stubs["stream"][0].get("disable_thinking") is False  # 默认精细模式（思考开）
     sys_prompt = write_stubs["stream"][0]["system_prompt"]
     assert "守一道" in sys_prompt
     assert "青石镇来了个懒郎中" in sys_prompt
@@ -83,6 +83,10 @@ async def test_write_stream_creates_plan_and_chapter(client, project_id, write_s
     assert len(chap_rows) == 1 and chap_rows[0]["chapter_number"] == 1
     assert chap_rows[0]["status"] == "finalized"
     assert "灵茶" in chap_rows[0]["content"]
+    # 快速模式：关思考
+    resp_fast = await client.post(f"/api/projects/{project_id}/chapters/write-stream", json={"fast": True})
+    assert resp_fast.status_code == 200
+    assert write_stubs["stream"][-1].get("disable_thinking") is True
 
 
 @pytest.mark.asyncio

@@ -334,6 +334,7 @@ CHAPTER_WRITER_SYSTEM_PROMPT = """你是一位顶尖网文作者，正在为番�
 class WriteChapterRequest(BaseModel):
     user_hint: str = ""
     regenerate: bool = False  # True = 重写最新一章（旧稿在成功后被替换）
+    fast: bool = False  # True = 关闭思考快速成稿（约1分钟）；默认精细模式（思考充分，约4-5分钟）
 
 
 async def _load_chronicle_digest(db, project_id: str) -> str:
@@ -365,12 +366,12 @@ async def write_chapter_stream(project_id: str, body: WriteChapterRequest):
     if not proj_exists:
         raise HTTPException(status_code=404, detail="Project not found")
     return StreamingResponse(
-        _write_chapter_generator(project_id, body.user_hint, body.regenerate),
+        _write_chapter_generator(project_id, body.user_hint, body.regenerate, body.fast),
         media_type="application/x-ndjson",
     )
 
 
-async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: bool):
+async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: bool, fast: bool = False):
     db = await get_db()
 
     def emit(obj: dict) -> str:
@@ -473,7 +474,7 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
                 messages,
                 system_prompt=CHAPTER_WRITER_SYSTEM_PROMPT + "\n\n" + "\n\n".join(context_blocks),
                 temperature=1.0,
-                disable_thinking=True,  # 网关攒包下思考会吃光 token 导致正文为空
+                disable_thinking=fast,  # fast=快速模式关思考；默认精细模式（上限32k后思考不再耗尽）
             ):
                 if kind == "reasoning":
                     continue  # 阅读器只显示正文

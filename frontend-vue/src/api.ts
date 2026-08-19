@@ -514,7 +514,7 @@ export interface WriteChapterEvents {
 /** 一键写下一章：NDJSON 流（章纲阶段 phase → 正文 content → done） */
 export function streamWriteChapter(
   projectId: ID,
-  opts: { user_hint?: string; regenerate?: boolean },
+  opts: { user_hint?: string; regenerate?: boolean; fast?: boolean },
   events: WriteChapterEvents,
 ): StreamAbort {
   const xhr = new XMLHttpRequest()
@@ -622,7 +622,7 @@ export function streamWriteChapter(
   }
 
   watchdog.touch()
-  xhr.send(JSON.stringify({ user_hint: opts.user_hint || '', regenerate: !!opts.regenerate }))
+  xhr.send(JSON.stringify({ user_hint: opts.user_hint || '', regenerate: !!opts.regenerate, fast: !!opts.fast }))
 
   return function abort() { xhr.abort() }
 }
