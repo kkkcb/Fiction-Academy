@@ -543,10 +543,27 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
     chronicle_digest = await _load_chronicle_digest(db, project_id)
     recent_summary = await _load_recent_chapter_summary(db, project_id)
 
+    # 近章结尾原文：钩子反重复（防止"今晚风大"式口头禅复读）
+    ending_rows = await fetch_all(
+        db,
+        """SELECT chapter_number, content FROM workspace_items
+           WHERE project_id = ? AND item_type = 'chapter' AND status IN ('finalized', 'locked')
+             AND chapter_number < ? ORDER BY chapter_number DESC LIMIT 3""",
+        (project_id, chapter_number),
+    )
+    recent_endings = "\n".join(
+        f"- 第{r['chapter_number']}章结尾：…" + ((r["content"] or "").strip().replace("\n", " ")[-60:])
+        for r in reversed(ending_rows)
+    )
+
     context_blocks = [
-        "## 骨架约束\n" + _format_skeleton_for_plan(skeleton_rows),
+        "## 骨架约束\n" + _format_skeleton_for_plan(skeleton_rows) + volume_block,
         f"## 本章章纲（第{chapter_number}章：{chapter_title}）\n{plan_content}",
     ]
+    if recent_endings:
+        context_blocks.append(
+            "## 近三章结尾（以下收法已用过，禁止重复其意象与句式，本章钩子必须换一种收法）\n" + recent_endings
+        )
     if recent_summary:
         context_blocks.append("## 近章剧情（已发生，勿矛盾勿重复）\n" + recent_summary)
     if kg_digest:
