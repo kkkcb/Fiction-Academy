@@ -593,9 +593,17 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
     _saved_think_len = 0
     for attempt in range(3):
         try:
+            # 作者系统：按书的题材选作者，注入其风格 DNA（替换单一"顶尖网文作者"人格）
+            from backend.agents.authors import resolve_author_for_genre, get_author as _get_author
+            proj = await fetch_one(db, "SELECT genre FROM projects WHERE id = ?", (project_id,))
+            _author = _get_author(resolve_author_for_genre((proj or {}).get("genre", "")))
+            _writer_persona = _author["style_dna"]
+            yield emit({"phase": "writing", "chapter_number": chapter_number,
+                        "message": f"执笔作者：{_author['name']}（{_author['label']}）"})
+
             async for kind, chunk in chat_stream(
                 messages,
-                system_prompt=CHAPTER_WRITER_SYSTEM_PROMPT + "\n\n" + "\n\n".join(context_blocks),
+                system_prompt=_writer_persona + "\n\n## 通用规则\n" + CHAPTER_WRITER_SYSTEM_PROMPT + "\n\n" + "\n\n".join(context_blocks),
                 temperature=1.0,
                 disable_thinking=fast,  # fast=快速模式关思考；默认精细模式（上限32k后思考不再耗尽）
             ):
