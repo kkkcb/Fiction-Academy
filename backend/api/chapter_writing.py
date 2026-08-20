@@ -620,6 +620,36 @@ async def _save_chapter(db, project_id: str, chapter_number: int, title: str,
     return item_id
 
 
+@router.get("/projects/{project_id}/writing/live")
+async def writing_live(project_id: str):
+    """写作直播：后台批量/他端写作时，实时读取当前草稿的思考与正文（轮询用）。"""
+    import time as _time
+    prog = _writing_progress.get(project_id)
+    if not prog or _time.time() - prog["since"] >= 900:
+        return {"in_progress": False}
+    db = await get_db()
+    row = await fetch_one(
+        db,
+        """SELECT content, metadata FROM workspace_items
+           WHERE project_id = ? AND item_type = 'chapter' AND chapter_number = ? AND status = 'draft'""",
+        (project_id, prog["chapter"]),
+    )
+    thinking = ""
+    content = ""
+    if row:
+        content = row["content"] or ""
+        try:
+            thinking = (json.loads(row["metadata"]) if row["metadata"] else {}).get("thinking") or ""
+        except (TypeError, ValueError):
+            pass
+    return {
+        "in_progress": True,
+        "chapter": prog["chapter"], "title": prog["title"], "fast": prog.get("fast", False),
+        "thinking_tail": thinking[-4000:], "content": content[-8000:],
+        "words": len(content),
+    }
+
+
 @router.get("/projects/{project_id}/writing/status")
 async def writing_status(project_id: str):
     """写作进度：是否在写、当前章、章节总数与总字数（供界面实时显示）。"""

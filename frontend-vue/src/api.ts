@@ -764,3 +764,17 @@ export function getStoryWeb(projectId: ID): Promise<StoryWeb> {
 export function backfillStoryWeb(projectId: ID, limit: number): Promise<{ updated: number; remaining: number }> {
   return request('POST', `/projects/${projectId}/story-web/backfill`, { limit })
 }
+
+export interface WritingLive {
+  in_progress: boolean
+  chapter?: number
+  title?: string
+  fast?: boolean
+  thinking_tail?: string
+  content?: string
+  words?: number
+}
+
+export function getWritingLive(projectId: ID): Promise<WritingLive> {
+  return request<WritingLive>('GET', `/projects/${projectId}/writing/live`)
+}

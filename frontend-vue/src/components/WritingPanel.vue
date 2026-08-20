@@ -35,6 +35,24 @@ const selectedId = ref<string | null>(null)
 const liveStatus = ref<api.WritingStatus | null>(null)
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
+const liveThinking = ref('')
+const liveContent = ref('')
+let liveTimer: ReturnType<typeof setInterval> | null = null
+
+async function pollLive() {
+  if (!currentProjectId.value || isWritingChapter.value) return
+  try {
+    const r = await api.getWritingLive(currentProjectId.value)
+    if (r.in_progress) {
+      liveThinking.value = r.thinking_tail || ''
+      liveContent.value = r.content || ''
+    } else {
+      liveThinking.value = ''
+      liveContent.value = ''
+    }
+  } catch { /* 忽略 */ }
+}
+
 async function pollStatus() {
   if (!currentProjectId.value) return
   try {
@@ -45,8 +63,12 @@ async function pollStatus() {
 onMounted(() => {
   pollStatus()
   statusTimer = setInterval(pollStatus, 5000)
+  liveTimer = setInterval(pollLive, 2500)
 })
-onUnmounted(() => { if (statusTimer) clearInterval(statusTimer) })
+onUnmounted(() => {
+  if (statusTimer) clearInterval(statusTimer)
+  if (liveTimer) clearInterval(liveTimer)
+})
 const selected = computed<WorkspaceItem | null>(() =>
   chapters.value.find(c => c.id === selectedId.value) || null,
 )
@@ -288,21 +310,21 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
 
       <main ref="readerEl" class="chapter-reader">
         <!-- 写作中 / 写作完成预览 -->
-        <template v-if="isWritingChapter || writingContent">
+        <template v-if="isWritingChapter || writingContent || (liveStatus?.in_progress && (liveThinking || liveContent))">
           <div class="reader-head">
             <div class="reader-title">
-              第{{ writingChapterNumber || '?' }}章<template v-if="writingChapterTitle"> · {{ writingChapterTitle }}</template>
+              第{{ writingChapterNumber || liveStatus?.current_chapter || '?' }}章<template v-if="writingChapterTitle || liveStatus?.current_title"> · {{ writingChapterTitle || liveStatus?.current_title }}</template>
             </div>
-            <div v-if="isWritingChapter" class="reader-phase">
-              <span class="dot-pulse"></span>{{ writingPhase || '正在执笔…' }}
+            <div v-if="isWritingChapter || liveStatus?.in_progress" class="reader-phase">
+              <span class="dot-pulse"></span>{{ isWritingChapter ? (writingPhase || '正在执笔…') : '后台写作直播中…' }}
             </div>
             <div v-else class="reader-meta">已存档</div>
           </div>
-          <div v-if="isWritingChapter && !writingContent && !writingThinking" class="reader-waiting">{{ writingPhase || '正在准备…' }}</div>
-          <ThinkingBlock v-if="isWritingChapter && writingThinking && !writingContent" :text="writingThinking" :streaming="true" class="writing-thinking" />
+          <div v-if="(isWritingChapter || liveStatus?.in_progress) && !writingContent && !liveContent && !writingThinking && !liveThinking" class="reader-waiting">{{ writingPhase || '正在构思…' }}</div>
+          <ThinkingBlock v-if="!writingContent && !liveContent && (isWritingChapter ? writingThinking : liveThinking)" :text="isWritingChapter ? writingThinking : liveThinking" :streaming="true" class="writing-thinking" />
           <article class="reader-content">
-            <div v-html="renderProse(writingContent)"></div>
-            <span v-if="isWritingChapter" class="writing-cursor"></span>
+            <div v-html="renderProse(writingContent || liveContent)"></div>
+            <span v-if="isWritingChapter || liveStatus?.in_progress" class="writing-cursor"></span>
           </article>
         </template>
 
