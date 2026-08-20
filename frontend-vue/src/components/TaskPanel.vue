@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
@@ -13,6 +13,18 @@ const tasks = ref<WritingTasks | null>(null)
 const loading = ref(false)
 const rewriting = ref<number | null>(null)
 const weaving = ref(false)
+
+import type { WritingStatus } from '../api'
+
+const live = ref<WritingStatus | null>(null)
+let liveTimer: ReturnType<typeof setInterval> | null = null
+
+async function pollLive() {
+  if (!currentProjectId.value) return
+  try {
+    live.value = await api.getWritingStatus(currentProjectId.value)
+  } catch { /* 忽略 */ }
+}
 
 async function load() {
   if (!currentProjectId.value) return
@@ -55,7 +67,12 @@ async function weaveWeb() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  pollLive()
+  liveTimer = setInterval(pollLive, 4000)
+})
+onUnmounted(() => { if (liveTimer) clearInterval(liveTimer) })
 </script>
 
 <template>
@@ -68,6 +85,16 @@ onMounted(load)
     </div>
 
     <div v-if="tasks" class="tp-body">
+      <!-- 正在写 -->
+      <div v-if="live?.in_progress" class="task-card live-card">
+        <span class="dot-pulse"></span>
+        <span class="live-text">
+          正在写第 {{ live.current_chapter }} 章《{{ live.current_title }}》
+          <span v-if="live.fast">（快速）</span>
+          · 本书已 {{ live.chapters }} 章
+        </span>
+      </div>
+
       <!-- 卷进度 -->
       <div class="task-card">
         <div class="tc-head">
@@ -139,4 +166,24 @@ onMounted(load)
 .tr-meta { font-size: 10px; color: #d97706; font-family: var(--font-mono), monospace; }
 .spinning { animation: tpSpin 0.9s linear infinite; }
 @keyframes tpSpin { to { transform: rotate(360deg); } }
+</style>
+
+<style scoped>
+.live-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-lighter);
+}
+.live-text { font-size: 12px; color: var(--text-primary); font-weight: 600; }
+.dot-pulse {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: livePulse 1.2s ease-in-out infinite;
+}
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 </style>
