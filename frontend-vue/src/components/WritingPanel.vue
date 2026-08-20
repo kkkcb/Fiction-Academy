@@ -51,6 +51,16 @@ const selected = computed<WorkspaceItem | null>(() =>
   chapters.value.find(c => c.id === selectedId.value) || null,
 )
 
+function chapterThinking(item: WorkspaceItem | null): string {
+  if (!item) return ''
+  try {
+    const meta = JSON.parse(item.metadata || '{}') as Record<string, unknown>
+    return (meta.thinking as string) || ''
+  } catch {
+    return ''
+  }
+}
+
 function planTypesOf(chapterNo: number | null | undefined): string[] {
   if (!chapterNo) return []
   const plan = workspaceItems.value.find(
@@ -307,6 +317,7 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
             </div>
           </div>
 
+          <ThinkingBlock v-if="chapterThinking(selected)" :text="chapterThinking(selected)" :streaming="false" class="chapter-thinking" />
           <div v-if="selectedPlan" class="plan-card">
             <button class="plan-toggle" @click="showPlan = !showPlan">
               <ClipboardList :size="13" :stroke-width="1.75" style="vertical-align:-2px" /> 本章章纲 <span class="plan-arrow" :class="{ open: showPlan }">▾</span>

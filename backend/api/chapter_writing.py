@@ -512,7 +512,9 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
 
     # --- 3. 流式执笔（网关攒包下思考可能吃光 token 导致正文为空 → 自动重试） ---
     full_text = ""
+    thinking_text = ""
     _saved_len = 0
+    _saved_think_len = 0
     for attempt in range(3):
         try:
             async for kind, chunk in chat_stream(
@@ -523,14 +525,24 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
             ):
                 if kind == "reasoning":
                     # 思考流实时转发：等待期可见构思过程，也避免前端空闲误判
+                    thinking_text += chunk
                     yield emit({"thinking": chunk})
+                    if len(thinking_text) - _saved_think_len >= 2000:
+                        _saved_think_len = len(thinking_text)
+                        await db.execute(
+                            "UPDATE workspace_items SET metadata = ?, updated_at = datetime('now') WHERE id = ?",
+                            (json.dumps({"word_count": len(full_text), "thinking": thinking_text}, ensure_ascii=False), draft_id),
+                        )
+                        await db.commit()
                     continue
                 full_text += chunk
                 yield emit({"content": chunk})
                 if len(full_text) - _saved_len >= 1200:
                     _saved_len = len(full_text)
-                    await db.execute("UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
-                                     (full_text, draft_id))
+                    await db.execute(
+                        "UPDATE workspace_items SET content = ?, metadata = ?, updated_at = datetime('now') WHERE id = ?",
+                        (full_text, json.dumps({"word_count": len(full_text), "thinking": thinking_text}, ensure_ascii=False), draft_id),
+                    )
                     await db.commit()
             if full_text.strip():
                 break
@@ -549,7 +561,11 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
                 f"字数不足（{len(full_text.strip())}/{min_words} 下限），重写第 {attempt + 1}/2 次…")
             full_text = ""
 
+            thinking_text = ""
+
             _saved_len = 0
+
+            _saved_think_len = 0
 
             await db.execute("UPDATE workspace_items SET content = '', updated_at = datetime('now') WHERE id = ?", (draft_id,))
 
@@ -564,7 +580,7 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
 
     # --- 4. 存档 + 钩子（编年史/摘要，后台异步） ---
     from backend.api.workspace import _spawn_bg, _trigger_chronicle_update, _generate_chapter_summary
-    item_id = await _save_chapter(db, project_id, chapter_number, chapter_title, full_text, "finalized", reuse_id=draft_id)
+    item_id = await _save_chapter(db, project_id, chapter_number, chapter_title, full_text, "finalized", reuse_id=draft_id, _save_thinking=thinking_text)
     if old_chapter_id and old_chapter_id != item_id:
         await db.execute("DELETE FROM workspace_items WHERE id = ?", (old_chapter_id,))
         await db.commit()
@@ -579,13 +595,13 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
 
 
 async def _save_chapter(db, project_id: str, chapter_number: int, title: str,
-                        content: str, status: str, reuse_id: str | None = None) -> str:
+                        content: str, status: str, reuse_id: str | None = None, _save_thinking: str = "") -> str:
     if reuse_id:
         await db.execute(
             """UPDATE workspace_items SET status = ?, title = ?, content = ?,
                metadata = ?, updated_at = datetime('now') WHERE id = ?""",
             (status, title, content,
-             json.dumps({"word_count": len(content)}, ensure_ascii=False), reuse_id),
+             json.dumps({"word_count": len(content), "thinking": _save_thinking}, ensure_ascii=False), reuse_id),
         )
         await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
         await db.commit()
