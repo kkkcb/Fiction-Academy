@@ -197,7 +197,7 @@ onUnmounted(() => { if (liveTimer) clearInterval(liveTimer) })
         </div>
         <div v-for="d in tasks.deficient" :key="d.chapter" class="task-row">
           <span class="tr-name">第{{ d.chapter }}章《{{ d.title }}》</span>
-          <span class="tr-meta">{{ d.words }}/{{ d.target * 85 / 100 | 0 }} 字下限</span>
+          <span class="tr-meta">{{ d.words }}/{{ Math.floor(d.target * 85 / 100) }} 字下限</span>
           <button class="btn btn-sm" :disabled="isWritingChapter || batchWriting || rewriting !== null" @click="rewriteChapter(d.chapter)">
             <PenLine :size="12" :stroke-width="1.75" /> {{ rewriting === d.chapter ? '重写中…' : '重写' }}
           </button>
