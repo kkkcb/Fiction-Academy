@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
@@ -30,6 +30,20 @@ const nodes = ref<GNode[]>([])
 const links = ref<GLink[]>([])
 const W = 960, H = 700
 const hoverNode = ref<GNode | null>(null)
+const selectedNode = ref<GNode | null>(null)  // 点击锁定聚焦（比 hover 更持久清晰）
+
+const focusNode = computed<GNode | null>(() => selectedNode.value || hoverNode.value)
+
+const neighbors = computed<Set<string>>(() => {
+  const f = focusNode.value
+  if (!f) return new Set()
+  const set = new Set<string>([f.id])
+  for (const l of links.value) {
+    if (l.source === f.id) set.add(l.target)
+    if (l.target === f.id) set.add(l.source)
+  }
+  return set
+})
 const dragNode = ref<GNode | null>(null)
 let raf = 0
 let clock = 0
@@ -139,8 +153,14 @@ const nodeRadius = (n: GNode) =>
   n.kind === 'chapter' ? Math.max(11, Math.min(21, Math.sqrt((n.words || 3200) / 20)))
   : n.kind === 'character' ? 10 : 8
 const ringColor = (n: GNode) => (n.types && n.types.length && TYPE_RING[n.types[0]]) || '#c55d3b'
-const dimmed = (id: string) => hoverNode.value && hoverNode.value.id !== id && !links.value.some(l =>
-  (l.source === hoverNode.value!.id && l.target === id) || (l.target === hoverNode.value!.id && l.source === id))
+const dimmed = (id: string) => {
+  const f = focusNode.value
+  return !!f && !neighbors.value.has(id)
+}
+const litLink = (l: GLink) => {
+  const f = focusNode.value
+  return !!f && (l.source === f.id || l.target === f.id)
+}
 const nodeTransform = (n: GNode) => 'translate(' + n.x + ' ' + n.y + ')'
 const nodeDelay = (n: GNode) => (n.born * 40) + 'ms'
 const haloDelay = (n: GNode) => (n.phase * 0.4) + 's'
@@ -165,6 +185,34 @@ function onPointerMove(e: PointerEvent) {
   dragNode.value.y = (e.clientY - r.top) * (H / r.height)
 }
 function onPointerUp() { dragNode.value = null }
+
+function selectNode(n: GNode) {
+  if (dragNode.value) return  // 拖拽不触发选择
+  selectedNode.value = selectedNode.value?.id === n.id ? null : n
+}
+
+function clearSelection() { selectedNode.value = null }
+
+// 详情卡：关联线程/章节
+const selThreads = computed(() => {
+  const f = selectedNode.value
+  if (!f || f.kind === 'chapter') return []
+  return threads.value.filter(t => t.kind[0] + ':' + t.name.slice(0, 8) === f.id)
+})
+const selChapter = computed(() => {
+  const f = selectedNode.value
+  if (!f || f.kind !== 'chapter') return null
+  return chapters.value.find(c => c.chapter === f.chapter) || null
+})
+const chapterThreads = computed(() => {
+  const f = selectedNode.value
+  if (!f || f.kind !== 'chapter') return []
+  return threads.value.filter(t => t.chapters.includes(f.chapter || 0))
+})
+function selectChapterNo(n: number) {
+  const node = nodes.value.find(x => x.kind === 'chapter' && x.chapter === n)
+  if (node) selectedNode.value = node
+}
 
 async function load() {
   if (!currentProjectId.value) return
@@ -222,7 +270,7 @@ onUnmounted(() => cancelAnimationFrame(raf))
     <div v-if="!chapters.length && !loading" class="sw-empty">还没有已定稿的章节</div>
 
     <div v-else class="sw-canvas" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointerleave="onPointerUp">
-      <svg :viewBox="'0 0 ' + W + ' ' + H" class="sw-svg">
+      <svg :viewBox="'0 0 ' + W + ' ' + H" class="sw-svg" @click="clearSelection">
         <defs>
           <filter id="glow2" x="-120%" y="-120%" width="340%" height="340%">
             <feGaussianBlur stdDeviation="5" result="b" />
@@ -243,7 +291,7 @@ onUnmounted(() => cancelAnimationFrame(raf))
         <!-- 连线：流光虚线 -->
         <path v-for="(l, i) in links" :key="'e' + i" :d="linkPath(l)" class="edge"
               :stroke="linkColor(l.kind)"
-              :class="{ lit: hoverNode && (l.source === hoverNode.id || l.target === hoverNode.id), dim: !!hoverNode && !(l.source === hoverNode.id || l.target === hoverNode.id) }" />
+              :class="{ lit: litLink(l), dim: !!focusNode && !litLink(l) }" />
         <!-- 彗星脉冲 -->
         <g v-for="(l, i) in links" :key="'p' + i">
           <path :id="'lp' + i" :d="linkPath(l)" fill="none" stroke="none" />
@@ -258,9 +306,11 @@ onUnmounted(() => cancelAnimationFrame(raf))
         <!-- 节点 -->
         <g v-for="n in nodes" :key="n.id" class="gnode" :transform="nodeTransform(n)"
            :style="{ animationDelay: nodeDelay(n) }"
-           @pointerdown="onPointerDown(n, $event)" @mouseenter="hoverNode = n" @mouseleave="hoverNode = null">
+           @pointerdown="onPointerDown(n, $event)" @click.stop="selectNode(n)"
+          @mouseenter="hoverNode = n" @mouseleave="hoverNode = null">
           <circle :r="nodeRadius(n) * 2.1" class="halo" :class="{ dim: dimmed(n.id) }"
                   :style="{ animationDelay: haloDelay(n) }" />
+          <circle v-if="selectedNode && selectedNode.id === n.id" :r="nodeRadius(n) + 11" class="sel-ring" :stroke="n.kind === 'character' ? '#67e8f9' : n.kind === 'foreshadow' ? '#fcd34d' : '#e8966a'" />
           <g v-if="n.kind === 'chapter'" filter="url(#glow2)">
             <circle :r="nodeRadius(n) + 5" fill="none" :stroke="ringColor(n)" stroke-width="1.6" opacity="0.85" />
             <circle :r="nodeRadius(n)" :fill="(n.types || []).includes('爽点爆发') || n.emotion === '燃' ? 'url(#chGradFg)' : 'url(#chGrad)'" />
@@ -279,7 +329,38 @@ onUnmounted(() => cancelAnimationFrame(raf))
         </g>
       </svg>
 
-      <div v-if="hoverNode" class="hover-card" :style="{
+      <!-- 聚焦详情侧卡（点击节点锁定） -->
+      <div v-if="selectedNode" class="focus-card">
+        <div class="fc-head">
+          <span v-if="selectedNode.kind === 'chapter'" class="fc-title">第{{ selectedNode.chapter }}章 · {{ selChapter?.title }}</span>
+          <span v-else class="fc-title">
+            <component :is="selectedNode.kind === 'character' ? User : BookMarked" :size="13" /> {{ selectedNode.label }}
+          </span>
+          <button class="btn btn-sm" aria-label="取消聚焦" @click="clearSelection">✕</button>
+        </div>
+        <template v-if="selectedNode.kind === 'chapter'">
+          <div class="fc-meta">{{ (selectedNode.types || []).join(' · ') }} | {{ selectedNode.words }} 字 | {{ selectedNode.emotion || '—' }}</div>
+          <div class="fc-plot">{{ selectedNode.plot || '（无概要）' }}</div>
+          <div v-if="chapterThreads.length" class="fc-sec">关联线程（{{ chapterThreads.length }}）</div>
+          <div class="fc-list">
+            <div v-for="t in chapterThreads" :key="t.name" class="fc-item" :class="t.kind">
+              <component :is="t.kind === 'character' ? User : BookMarked" :size="11" />
+              <span class="fc-name">{{ t.name }}</span>
+              <span class="fc-chs">{{ t.chapters.join('→') }}</span>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <div v-for="t in selThreads" :key="t.name">
+            <div class="fc-meta">出现于 {{ t.chapters.length }} 章{{ t.payoff_chs?.length ? ' · 已回收 ' + t.payoff_chs.length + ' 次' : '' }}</div>
+            <div class="fc-list">
+              <button v-for="n in t.chapters" :key="n" class="fc-chip" @click="selectChapterNo(n)">第{{ n }}章</button>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div v-if="hoverNode && !selectedNode" class="hover-card" :style="{
         left: Math.min((hoverNode.x / W) * 100, 70) + '%',
         top: Math.min((hoverNode.y / H) * 100, 76) + '%',
       }">
@@ -361,4 +442,33 @@ onUnmounted(() => cancelAnimationFrame(raf))
 .hc-plot { font-size: 11px; line-height: 1.65; color: #bfb6aa; max-height: 116px; overflow-y: auto; }
 .spinning { animation: swSpin 0.9s linear infinite; }
 @keyframes swSpin { to { transform: rotate(360deg); } }
+</style>
+
+<style scoped>
+.gnode .sel-ring { fill: none; stroke-width: 1.2; stroke-dasharray: 3 5; opacity: 0.9; animation: spin-ring 9s linear infinite; transform-origin: center; }
+@keyframes spin-ring { to { transform: rotate(360deg); } }
+.focus-card {
+  position: absolute; top: 14px; right: 14px; width: 264px; max-height: calc(100% - 28px);
+  overflow-y: auto; padding: 12px 14px;
+  background: rgba(24, 20, 16, 0.96); border: 1px solid rgba(197, 93, 59, 0.4);
+  border-radius: var(--radius-md); box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  z-index: 6;
+}
+.fc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.fc-title { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; color: #f3ece3; }
+.fc-meta { font-size: 10px; color: #e8966a; margin-bottom: 6px; }
+.fc-plot { font-size: 11px; line-height: 1.7; color: #bfb6aa; margin-bottom: 8px; }
+.fc-sec { font-size: 10px; color: #8d8578; margin: 6px 0 4px; }
+.fc-list { display: flex; flex-direction: column; gap: 4px; }
+.fc-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #d8d0c6; }
+.fc-item.character { color: #67e8f9; }
+.fc-item.foreshadow { color: #fcd34d; }
+.fc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-chs { font-family: var(--font-mono), monospace; font-size: 9px; color: #8d8578; }
+.fc-chip {
+  display: inline-block; margin: 0 4px 4px 0; padding: 2px 9px;
+  border: 1px solid rgba(197, 93, 59, 0.4); border-radius: var(--radius-full);
+  background: transparent; color: #e8966a; font-size: 10px; font-family: inherit; cursor: pointer;
+}
+.fc-chip:hover { background: rgba(197, 93, 59, 0.15); }
 </style>

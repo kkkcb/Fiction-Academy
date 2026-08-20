@@ -2530,3 +2530,39 @@ body {
 /* ===== 模式切换胶囊（骨架⇄写作 丝滑互切） ===== */
 .mode-pill { flex-shrink: 0; }
 .project-quick { color: var(--accent); }
+
+/* ===== 屏幕适配 ===== */
+@media (max-width: 1180px) {
+  .projects-page { padding: 48px 20px 48px; }
+  .projects-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .app-rail { width: 68px; }
+  .rail-label { font-size: 9px; }
+  .chapter-list { width: 176px; }
+  .writing-header, .writing-body, .wp-topbar, .batch-bar, .sw-head { padding-left: 10px; padding-right: 10px; }
+  .wh-sub { display: none; }
+  .projects-subtitle { font-size: 12px; }
+  .projects-title { font-size: 30px; }
+}
+
+@media (max-width: 860px) {
+  .app-rail { width: 56px; padding: 10px 4px; }
+  .rail-label { display: none; }
+  .app-rail-brand { margin-bottom: 8px; }
+  .projects-page { padding: 32px 12px 32px; }
+  .projects-title { font-size: 24px; }
+  .projects-header-actions { flex-wrap: wrap; }
+  .chapter-list { width: 148px; }
+  .ch-item { padding: 6px 6px; }
+  .ch-title { font-size: 11px; }
+  .reader-content { padding: 14px 14px 32px; }
+  .reader-content p { font-size: 13.5px; }
+  .chat-header { flex-wrap: wrap; gap: 6px; }
+  .chat-header-subtitle { display: none; }
+  .wh-actions { flex-wrap: wrap; }
+  .sw-sub { display: none; }
+  .focus-card { width: 216px; }
+  .mat-library { width: 96vw; }
+  .wp-title { gap: 6px; }
+  .wp-book { font-size: 12px; }
+  .batch-bar { flex-wrap: wrap; }
+}
