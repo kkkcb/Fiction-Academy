@@ -577,6 +577,13 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
                         )
                         await db.commit()
                     continue
+                if _writing_progress.get(project_id, {}).get("stop"):
+                    await _save_chapter(db, project_id, chapter_number, chapter_title,
+                                        full_text + "\n\n[已手动停止]", "draft", reuse_id=draft_id,
+                                        _save_thinking=thinking_text)
+                    _writing_progress.pop(project_id, None)
+                    yield emit({"stopped": True, "chapter_number": chapter_number})
+                    return
                 full_text += chunk
                 yield emit({"content": chunk})
                 if len(full_text) - _saved_len >= 1200:
@@ -739,8 +746,15 @@ class BatchControlBody(BaseModel):
 @router.post("/projects/{project_id}/writing/batch/control")
 async def control_writing_batch(project_id: str, body: BatchControlBody):
     st = _batch_state.get(project_id)
-    if not st or not st.get("task"):
+    if (not st or not st.get("task")) and body.action == "stop":
+        # 单章写作停止：打停止标记，生成器在每个 chunk 间检查
+        prog = _writing_progress.get(project_id)
+        if prog:
+            prog["stop"] = True
+            return {"ok": True, "active": False, "stopped": True}
         raise HTTPException(status_code=404, detail="没有进行中的写作任务")
+    if not st or not st.get("task"):
+        raise HTTPException(status_code=404, detail="没有进行中的写作任务（暂停/继续仅适用于连续任务）")
     if body.action == "pause":
         st["paused"] = True
     elif body.action == "resume":

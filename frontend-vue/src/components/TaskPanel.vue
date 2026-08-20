@@ -56,8 +56,8 @@ async function control(action: 'pause' | 'resume' | 'stop') {
   try {
     await api.controlWritingBatch(currentProjectId.value, action)
     pollLive()
-  } catch (e) {
-    store.error = (e as Error).message
+  } catch {
+    pollLive()
   }
 }
 
@@ -128,6 +128,17 @@ onUnmounted(() => { if (liveTimer) clearInterval(liveTimer) })
           <span v-if="live.fast">（快速）</span>
           · 本书已 {{ live.chapters }} 章
         </span>
+      </div>
+
+      <!-- 单章写入停止 -->
+      <div v-if="live?.in_progress && !batch?.active" class="task-card batch-card">
+        <div class="tc-head">
+          <span class="tc-name">正在写第 {{ live.current_chapter }} 章《{{ live.current_title }}》</span>
+          <span class="tc-meta">单章写作</span>
+        </div>
+        <div class="tc-actions">
+          <button class="btn btn-sm" @click="control('stop')">停止（保留已写部分为草稿）</button>
+        </div>
       </div>
 
       <!-- 批量任务控制 -->
