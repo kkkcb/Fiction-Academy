@@ -5,12 +5,13 @@ import { useAppStore } from '../stores/app'
 import WritingPanel from './WritingPanel.vue'
 import StoryWebPanel from './StoryWebPanel.vue'
 import TaskPanel from './TaskPanel.vue'
+import VolumePanel from './VolumePanel.vue'
 import { ListTodo } from 'lucide-vue-next'
 import { Network, BookOpen } from 'lucide-vue-next'
 import { ChevronLeft } from 'lucide-vue-next'
 
 const store = useAppStore()
-const view = ref<'chapters' | 'web' | 'tasks'>('chapters')
+const view = ref<'chapters' | 'web' | 'tasks' | 'volumes'>('chapters')
 const { currentProject, currentProjectId, chapters, totalChapterWords } = storeToRefs(store)
 
 onMounted(() => {
@@ -42,10 +43,14 @@ onMounted(() => {
       <button class="wp-pill" :class="{ active: view === 'tasks' }" aria-label="写作任务" @click="view = 'tasks'">
         <ListTodo :size="13" :stroke-width="1.75" /> 任务
       </button>
+      <button class="wp-pill" :class="{ active: view === 'volumes' }" aria-label="卷纲" @click="view = 'volumes'">
+        <BookOpen :size="13" :stroke-width="1.75" /> 卷纲
+      </button>
     </div>
     <WritingPanel v-if="view === 'chapters'" class="wp-body" />
     <StoryWebPanel v-else-if="view === 'web'" class="wp-body" />
-    <TaskPanel v-else class="wp-body" />
+    <TaskPanel v-else-if="view === 'tasks'" class="wp-body" />
+    <VolumePanel v-else class="wp-body" />
   </div>
 </template>
 

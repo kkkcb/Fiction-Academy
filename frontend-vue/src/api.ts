@@ -801,3 +801,17 @@ export function startWritingBatch(projectId: ID, body: { target: number; hint?: 
 export function controlWritingBatch(projectId: ID, action: 'pause' | 'resume' | 'stop'): Promise<BatchInfo & { ok: boolean }> {
   return request('POST', `/projects/${projectId}/writing/batch/control`, { action })
 }
+
+export interface VolumeEntry {
+  vol: number; name: string; chapters: string; premise: string
+  core_conflict: string; key_nodes: string[]; climax: string; hook_to_next: string
+}
+export interface VolumeOutline {
+  exists: boolean; volumes: VolumeEntry[]; total_chapters?: number; content?: string
+}
+export function getVolumeOutline(projectId: ID): Promise<VolumeOutline> {
+  return request<VolumeOutline>('GET', `/projects/${projectId}/volume-outline`)
+}
+export function generateVolumeOutline(projectId: ID): Promise<{ volumes: VolumeEntry[]; total_chapters?: number }> {
+  return request('POST', `/projects/${projectId}/volume-outline/generate`)
+}

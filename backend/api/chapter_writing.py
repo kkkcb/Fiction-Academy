@@ -166,7 +166,7 @@ async def create_chapter_plan(project_id: str, body: ChapterPlanRequest):
     try:
         plan = await generate_chapter_plan(
             chapter_number=chapter_number,
-            skeleton_context=skeleton_context,
+            skeleton_context=_format_skeleton_for_plan(skeleton_rows) + volume_block,
             recent_summary=recent_summary,
             pending_foreshadows=pending_foreshadows,
             user_hint=body.user_hint,
@@ -439,6 +439,14 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
             )
             old_chapter_id = old["id"] if old else None
 
+    # 卷纲注入：写章要知道自己在哪一卷、本卷写什么
+    from backend.services.volume_outline import volume_context_for_chapter as _vol_ctx
+    try:
+        _vol_text = await _vol_ctx(project_id, chapter_number)
+        volume_block = "\n## 本卷卷纲\n" + _vol_text if _vol_text else ""
+    except Exception:
+        volume_block = ""
+
     # --- 1. 章纲：没有就生成，草稿则直接定稿（写作流里章纲即确认） ---
     plan_row = await fetch_one(
         db,
@@ -460,7 +468,7 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
         try:
             plan = await generate_chapter_plan(
                 chapter_number=chapter_number,
-                skeleton_context=_format_skeleton_for_plan(skeleton_rows),
+                skeleton_context=_format_skeleton_for_plan(skeleton_rows) + volume_block,
                 recent_summary=await _load_recent_chapter_summary(db, project_id),
                 pending_foreshadows=await _load_pending_foreshadows(db, project_id, chapter_number),
                 user_hint=user_hint,
@@ -896,3 +904,22 @@ async def backfill_story_web(project_id: str, body: BackfillBody):
     """为缺脉络数据的章节批量补生成（每调一次处理 limit 章，循环到 remaining=0）。"""
     from backend.services.story_web import backfill as _backfill
     return await _backfill(project_id, max(1, min(body.limit, 5)))
+
+
+@router.post("/projects/{project_id}/volume-outline/generate")
+async def generate_volume_outline_api(project_id: str):
+    """生成/重生成全书卷纲（每卷写什么）。"""
+    from backend.services.volume_outline import generate_volume_outline
+    try:
+        return await generate_volume_outline(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error("volume outline failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"卷纲生成失败: {str(e)[:100]}")
+
+
+@router.get("/projects/{project_id}/volume-outline")
+async def get_volume_outline_api(project_id: str):
+    from backend.services.volume_outline import get_volume_outline
+    return await get_volume_outline(project_id)
