@@ -241,3 +241,30 @@ async def test_zhihu_official_hot_and_fallback(client, monkeypatch):
     monkeypatch.setattr("backend.services.zhihu_api.fetch_hot", fake_hot2)
     got = await m._fetch_hot("zhihu")
     assert got and got[0]["title"] == "官方题"
+
+
+@pytest.mark.asyncio
+async def test_zhihu_rate_limit_no_retry(client, monkeypatch):
+    """Code 30001/30002：立即抛类型化异常，不重试（官方要求）。"""
+    import backend.services.zhihu_api as zapi
+
+    calls = {"n": 0}
+
+    class RateResp:
+        status_code = 200
+        def json(self):
+            calls["n"] += 1
+            return {"Code": 30001, "Message": "rate limited"}
+
+    class FakeClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None, headers=None): return RateResp()
+
+    monkeypatch.setattr(zapi, "ZHIHU_ACCESS_SECRET", "fake")
+    monkeypatch.setattr(zapi.httpx, "AsyncClient", FakeClient)
+    import pytest as _pytest
+    with _pytest.raises(zapi.ZhihuRateLimited):
+        await zapi._get("hot_list")
+    assert calls["n"] == 1  # 只调一次，未重试

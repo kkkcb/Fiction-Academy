@@ -20,6 +20,14 @@ class ZhihuNotConfigured(Exception):
     pass
 
 
+class ZhihuRateLimited(Exception):
+    """Code 30001：频率限制——官方要求立即停止，不得重试。"""
+
+
+class ZhihuQuotaExceeded(Exception):
+    """Code 30002/配额耗尽——当日额度用完，停止调用该能力。"""
+
+
 def _headers() -> dict:
     if not ZHIHU_ACCESS_SECRET:
         raise ZhihuNotConfigured("未配置 ZHIHU_ACCESS_SECRET")
@@ -31,19 +39,28 @@ def _headers() -> dict:
 
 
 async def _get(path: str, params: dict | None = None) -> dict:
+    """单次调用，不盲目重试（30001/30002 官方要求立即停止）。
+    仅时间戳/网络抖动类失败刷新时间戳重试一次。"""
     url = f"{_BASE}/{path}"
     for attempt in range(2):
         try:
             async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
                 r = await client.get(url, params=params, headers=_headers())
             body = r.json()
-            if r.status_code == 200 and body.get("Code") == 0:
+            code = body.get("Code")
+            if r.status_code == 200 and code == 0:
                 return body.get("Data") or {}
-            # 时间戳过期等可重试错误：刷新时间戳再来一次
+            if code == 30001:
+                raise ZhihuRateLimited(f"频率限制：{body.get('Message', '')[:60]}")
+            if code == 30002:
+                raise ZhihuQuotaExceeded(f"配额耗尽：{body.get('Message', '')[:60]}")
+            if code == 20001:
+                raise ZhihuNotConfigured(f"鉴权失败：Access Secret 无效或过期")
+            # 其他错误：刷新时间戳重试一次
             if attempt == 0:
                 continue
-            raise RuntimeError(f"知乎API错误 HTTP{r.status_code} Code={body.get('Code')} {body.get('Message', '')[:80]}")
-        except ZhihuNotConfigured:
+            raise RuntimeError(f"知乎API错误 HTTP{r.status_code} Code={code} {body.get('Message', '')[:80]}")
+        except (ZhihuNotConfigured, ZhihuRateLimited, ZhihuQuotaExceeded):
             raise
         except Exception as e:
             if attempt == 1:

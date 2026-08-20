@@ -45,10 +45,15 @@ async def _fetch_hot(source: str) -> list[dict]:
     # 知乎：官方开放平台 API 优先（真实摘要），未配置/失败则回退 60s
     if source == "zhihu":
         try:
-            from backend.services.zhihu_api import fetch_hot as _zh_hot, ZhihuNotConfigured
+            from backend.services.zhihu_api import (
+                fetch_hot as _zh_hot, ZhihuNotConfigured, ZhihuRateLimited, ZhihuQuotaExceeded,
+            )
             return await _zh_hot(30)
         except ZhihuNotConfigured:
             pass
+        except (ZhihuRateLimited, ZhihuQuotaExceeded) as e:
+            # 官方要求停止调用：直接回退 60s，不重试（100次/天的热榜额度要省着用）
+            logger.warning("[hot] zhihu official api stopped (%s), fallback 60s", type(e).__name__)
         except Exception as e:
             logger.warning("[hot] zhihu official api failed, fallback 60s: %s", e)
 
@@ -397,7 +402,10 @@ async def hot_discuss(url: str = "", title: str = "", source: str = ""):
                         "summary": f"@{top['author']}（{top['votes']}赞）：{top['excerpt'][:300]}"}
         except ZhihuNotConfigured:
             pass  # 未配置 secret：回退本地 detail
-        except Exception as e:
+        except ZhihuQuotaExceeded:
+            return {"ok": False, "reason": "js_or_login",
+                    "hint": "知乎搜索额度今日已用完（邀测期每日上限），明天恢复；下方仍显示话题概要"}
+        except (ZhihuRateLimited, Exception) as e:
             logger.info("[hot/discuss] zhihu search failed: %s", e)
 
     # 知乎回退：本地缓存里可能有话题详情（60s 源时代的缓存）
