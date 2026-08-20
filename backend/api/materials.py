@@ -42,6 +42,16 @@ class MaterialCreate(BaseModel):
 
 async def _fetch_hot(source: str) -> list[dict]:
     """拉取单个热榜源并归一化为 [{title, hot, url, summary}]。"""
+    # 知乎：官方开放平台 API 优先（真实摘要），未配置/失败则回退 60s
+    if source == "zhihu":
+        try:
+            from backend.services.zhihu_api import fetch_hot as _zh_hot, ZhihuNotConfigured
+            return await _zh_hot(30)
+        except ZhihuNotConfigured:
+            pass
+        except Exception as e:
+            logger.warning("[hot] zhihu official api failed, fallback 60s: %s", e)
+
     async with httpx.AsyncClient(timeout=15, trust_env=False,
                                  headers={"User-Agent": _UA}) as client:
         r = await client.get(f"{HOT_API_BASE}/{'60s' if source == 'news60' else source}")
@@ -357,7 +367,40 @@ async def hot_discuss(url: str = "", title: str = "", source: str = ""):
     需登录/JS 渲染的平台诚实返回不可读。"""
     import time as _time
 
-    # 知乎：本地缓存里就有完整话题详情（真实讨论摘录，零成本）
+    # 知乎：官方API搜真实回答（赞同数排序+精选评论），LLM 概括讨论
+    if source == "zhihu" and title:
+        try:
+            from backend.services.zhihu_api import search_answers as _zh_search, ZhihuNotConfigured
+            answers = await _zh_search(title, 6)
+            if answers:
+                raw = "\n".join(
+                    f"@{a['author']}（{a['votes']}赞）：{a['excerpt'][:200]}"
+                    + ("" if not a["comments"] else " 评论区：" + "；".join(a["comments"][:1]))
+                    for a in answers[:6])
+                try:
+                    prompt = (
+                        f"热点标题：{title}\n\n以下是知乎上的真实回答摘录：\n{raw}\n\n"
+                        "用2-3句话概括知乎网友的主要观点分歧与共识（谁在反对什么、什么被普遍认同）。只依据内容，不要编造。"
+                    )
+                    summary = await chat_text(
+                        messages=[{"role": "user", "content": prompt}],
+                        system_prompt="你是新闻编辑，擅长提炼社区讨论的核心分歧。",
+                        temperature=0.3,
+                    )
+                    text = (summary or "").strip()[:500]
+                    if text:
+                        return {"ok": True, "kind": "zhihu_answers", "summary": text}
+                except Exception as e:
+                    logger.warning("[hot/discuss] zhihu llm failed: %s", e)
+                top = answers[0]
+                return {"ok": True, "kind": "zhihu_answers",
+                        "summary": f"@{top['author']}（{top['votes']}赞）：{top['excerpt'][:300]}"}
+        except ZhihuNotConfigured:
+            pass  # 未配置 secret：回退本地 detail
+        except Exception as e:
+            logger.info("[hot/discuss] zhihu search failed: %s", e)
+
+    # 知乎回退：本地缓存里可能有话题详情（60s 源时代的缓存）
     if source == "zhihu" and title:
         cached = _HOT_CACHE.get("zhihu")
         if cached:

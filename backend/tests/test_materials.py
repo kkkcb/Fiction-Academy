@@ -95,6 +95,8 @@ def test_paraphrase_detector():
 async def test_hot_discuss_paths(client, monkeypatch):
     """看讨论三条路径：知乎本地详情 / 可读网页 LLM 概括 / JS墙诚实失败。"""
     from backend.api import materials as m
+    import backend.services.zhihu_api as zapi
+    monkeypatch.setattr(zapi, "ZHIHU_ACCESS_SECRET", "")  # 隔离：测试不触真实知乎API
 
     # 1) 知乎：命中本地缓存 detail 直出（无 LLM/网络）
     m._HOT_CACHE["zhihu"] = (time.time() + 600, [
@@ -202,3 +204,40 @@ async def test_douyin_discuss_layers(client, monkeypatch):
     r2 = await client.get("/api/hot/discuss", params={"title": "测试热", "source": "douyin"})
     body2 = r2.json()
     assert body2["ok"] and body2["kind"] == "douyin_comments" and "争论" in body2["summary"]
+
+
+@pytest.mark.asyncio
+async def test_zhihu_official_hot_and_fallback(client, monkeypatch):
+    """知乎官方API热榜 + 未配置时回退 60s。"""
+    import backend.services.zhihu_api as zapi
+    from backend.api import materials as m
+
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"Code": 0, "Data": {"Items": [
+                {"Title": "官方热榜题", "Url": "https://zhihu.com/q/1", "Summary": "官方真实摘要内容"},
+            ]}}
+
+    class FakeClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None, headers=None): return FakeResp()
+
+    async def fake_hot(limit=30):
+        return [{"title": "官方热榜题", "hot": "", "url": "u", "summary": "官方真实摘要内容"}]
+
+    monkeypatch.setattr(zapi, "ZHIHU_ACCESS_SECRET", "fake-secret")
+    monkeypatch.setattr(zapi.httpx, "AsyncClient", FakeClient)
+    items = await zapi.fetch_hot(30)
+    assert items[0]["title"] == "官方热榜题" and "官方真实" in items[0]["summary"]
+
+    # materials._fetch_hot 走官方API分支
+    monkeypatch.setattr(m, "logger", m.logger)
+    import backend.services.zhihu_api as z2
+    async def fake_hot2(limit=30):
+        return [{"title": "官方题", "hot": "", "url": "", "summary": "s"}]
+    monkeypatch.setattr("backend.services.zhihu_api.fetch_hot", fake_hot2)
+    got = await m._fetch_hot("zhihu")
+    assert got and got[0]["title"] == "官方题"

@@ -54,6 +54,8 @@ CORS_ORIGINS = [o.strip() for o in os.getenv(
 # 热榜数据源（60s API，github.com/vikiboss/60s）。公共实例有每日限额，
 # 建议生产自托管后用 HOT_API_BASE 覆盖（如 http://127.0.0.1:8787/v2）。
 HOT_API_BASE = os.getenv("HOT_API_BASE", "https://60s.viki.moe/v2")
+# 知乎开放平台 Access Secret（developer.zhihu.com）——配置后热榜知乎源走官方API（真实摘要+可搜真实讨论）
+ZHIHU_ACCESS_SECRET = os.getenv("ZHIHU_ACCESS_SECRET", "")
 
 # 可选：解锁微博讨论读取（模式来自 github.com/injahow/weibo-rss）
 # 浏览器登录 m.weibo.cn 后 F12 → Network → 任意请求的 Cookie 头，整串复制
