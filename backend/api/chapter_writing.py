@@ -661,59 +661,21 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
         yield emit({"error": "多次重试后模型仍未返回正文，请稍后再试"})
         return
 
-    # --- 3b. AI 痕迹体检（统计特征超标自动重写一次） ---
-    def _ai_check(text: str) -> str | None:
-        import re as _re
-        import statistics as _st
-        bad = []
-        for w in ["仿佛", "宛如", "似乎", "不禁", "一丝", "格外", "渐渐", "淡淡",
-                  "静静", "悄然", "瞬间", "微微", "轻轻", "缓缓", "弥漫", "嘴角", "眼神", "忽然"]:
-            if text.count(w) > 2:
-                bad.append(f"“{w}”x{text.count(w)}")
-        sents = [x.strip() for x in _re.split(r"[。！？]", text) if x.strip()]
-        lens = [len(x) for x in sents]
-        if len(lens) > 5:
-            cv = _st.stdev(lens) / _st.mean(lens)
-            if cv < 0.50:
-                bad.append(f"句长方差低({cv:.2f})")
-        tri = len(_re.findall(r"[一-鿿]{1,3}，[一-鿿]{1,3}，[一-鿿]{1,3}[，。]", text))
-        if tri > 4:
-            bad.append(f"三连排比x{tri}")
-        return "；".join(bad) if bad else None
-
-    ai_flags = _ai_check(full_text)
-    if ai_flags and not fast:
+    # --- 3b. AI味审查 Agent（独立审校+针对性改写） ---
+    from backend.agents.style_editor import stat_ai_flags, audit_and_rewrite
+    stat_flags = stat_ai_flags(full_text)
+    if stat_flags and not fast:
         yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title,
-                    "message": f"AI痕迹体检未过（{ai_flags}），人性化重写中…"})
-        try:
-            rewrite_prompt = (
-                f"以下是已写好的章节，但存在AI统计痕迹：{ai_flags}。\n\n"
-                "请重写这一章，要求：\n"
-                "1. 黑名单词每个最多出现1次或删除\n"
-                "2. 句长大幅波动：加入几句超过30字的长句和几个5字以内的短句\n"
-                "3. 删除三连排比，改为不对称的表达\n"
-                "4. 保持情节、人物、伏笔完全不变，只改文风\n"
-                f"\n原文：\n{full_text[:9000]}"
-            )
-            rewritten = ""
-            async for kind, chunk in chat_stream(
-                [{"role": "user", "content": rewrite_prompt}],
-                system_prompt="你是资深网文作者，擅长把AI味的稿子改出人味。保持情节不变，只调文风。",
-                temperature=0.9,
-            ):
-                if kind == "content":
-                    rewritten += chunk
-            if rewritten.strip() and len(rewritten) > len(full_text) * 0.7:
-                if not _ai_check(rewritten):
-                    full_text = rewritten
-                    yield emit({"phase": "writing", "message": "✓ 人性化重写完成"})
-                else:
-                    yield emit({"phase": "writing", "message": "重写仍有痕迹，保留原稿（可手动编辑）"})
-            else:
-                yield emit({"phase": "writing", "message": "重写过短，保留原稿"})
-        except Exception as e:
-            logger.warning("de-AI rewrite failed: %s", e)
-            yield emit({"phase": "writing", "message": "人性化重写失败，保留原稿"})
+                    "message": f"AI味审查：检出 {len(stat_flags)} 项（{'；'.join(stat_flags[:4])}），Agent 优化中…"})
+        audit = await audit_and_rewrite(full_text)
+        revised = audit.get("revised_text", "")
+        if revised:
+            full_text = revised
+            n_changes = len(audit.get("changes") or [])
+            yield emit({"phase": "writing",
+                        "message": f"✓ AI味审查完成：改写 {n_changes} 处（AI概率 {audit.get('ai_score_before', '?')}→{audit.get('ai_score_after', '?')}）"})
+        else:
+            yield emit({"phase": "writing", "message": "AI味审查未产出合格改写，保留原稿（可手动编辑）"})
 
     # --- 4. 存档 + 钩子（编年史/摘要，后台异步） ---
     from backend.api.workspace import _spawn_bg, _trigger_chronicle_update, _generate_chapter_summary
@@ -1003,3 +965,41 @@ async def generate_volume_outline_api(project_id: str):
 async def get_volume_outline_api(project_id: str):
     from backend.services.volume_outline import get_volume_outline
     return await get_volume_outline(project_id)
+
+
+class StyleAuditBody(BaseModel):
+    chapter: int
+
+
+@router.post("/projects/{project_id}/chapters/{chapter_number}/style-audit")
+async def style_audit_chapter(project_id: str, chapter_number: int):
+    """手动触发 AI 味审查：独立 Agent 改写并保存，返回修改点清单。"""
+    from backend.agents.style_editor import stat_ai_flags, audit_and_rewrite
+    db = await get_db()
+    row = await fetch_one(
+        db,
+        """SELECT id, title, content FROM workspace_items
+           WHERE project_id = ? AND item_type = 'chapter' AND chapter_number = ?""",
+        (project_id, chapter_number),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    content = row["content"] or ""
+    if len(content) < 50:
+        raise HTTPException(status_code=400, detail="章节内容过短")
+
+    flags = stat_ai_flags(content)
+    result = await audit_and_rewrite(content)
+    revised = result.get("revised_text", "")
+    if not revised:
+        return {"ok": False, "stat_flags": flags, "changes": result.get("changes", []),
+                "message": "审查完成但未产出合格改写（可能已足够人化）", "error": result.get("error")}
+
+    await db.execute(
+        "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+        (revised, row["id"]),
+    )
+    await db.commit()
+    return {"ok": True, "stat_flags": flags, "changes": result.get("changes", []),
+            "ai_score_before": result.get("ai_score_before"), "ai_score_after": result.get("ai_score_after"),
+            "word_count": len(revised)}
