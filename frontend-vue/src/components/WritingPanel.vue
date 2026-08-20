@@ -36,8 +36,18 @@ const liveStatus = ref<api.WritingStatus | null>(null)
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
 const liveThinking = ref('')
+const manualSelection = ref(false)  // 用户手动选章时直播让位；新章开写自动回直播
 const liveContent = ref('')
 let liveTimer: ReturnType<typeof setInterval> | null = null
+
+watch(() => liveStatus.value?.current_chapter, () => {
+  manualSelection.value = false
+})
+
+function selectChapter(c: { id: string }) {
+  manualSelection.value = true
+  selectedId.value = c.id
+}
 
 async function pollLive() {
   if (!currentProjectId.value || isWritingChapter.value) return
@@ -287,7 +297,7 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
             :key="c.id"
             class="ch-item"
             :class="{ active: c.id === selectedId && !isWritingChapter }"
-            @click="selectedId = c.id"
+            @click="selectChapter(c)"
           >
             <span class="ch-num">第{{ c.chapter_number }}章</span>
             <span v-for="t in planTypesOf(c.chapter_number)" :key="t" class="ch-type">{{ t }}</span>
@@ -310,7 +320,7 @@ const REVIEW_ICON: Record<string, unknown> = { error: CircleX, warning: CircleAl
 
       <main ref="readerEl" class="chapter-reader">
         <!-- 写作中 / 写作完成预览 -->
-        <template v-if="isWritingChapter || writingContent || (liveStatus?.in_progress && (liveThinking || liveContent))">
+        <template v-if="isWritingChapter || writingContent || (liveStatus?.in_progress && (liveThinking || liveContent) && !manualSelection)">
           <div class="reader-head">
             <div class="reader-title">
               第{{ writingChapterNumber || liveStatus?.current_chapter || '?' }}章<template v-if="writingChapterTitle || liveStatus?.current_title"> · {{ writingChapterTitle || liveStatus?.current_title }}</template>
