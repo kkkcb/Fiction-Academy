@@ -733,6 +733,7 @@ export function lintProject(projectId: ID): Promise<LintResult> {
 }
 
 export interface WritingStatus {
+  batch?: BatchInfo | null
   in_progress: boolean
   current_chapter?: number
   current_title?: string
@@ -788,4 +789,15 @@ export interface WritingTasks {
 }
 export function getWritingTasks(projectId: ID): Promise<WritingTasks> {
   return request<WritingTasks>('GET', `/projects/${projectId}/writing/tasks`)
+}
+
+export interface BatchInfo {
+  active: boolean; target: number; done: number; paused: boolean
+  awaiting_review: boolean; hint: string; fast: boolean; last_error?: string | null
+}
+export function startWritingBatch(projectId: ID, body: { target: number; hint?: string; fast?: boolean; pause_each?: boolean }): Promise<BatchInfo & { ok: boolean }> {
+  return request('POST', `/projects/${projectId}/writing/batch`, body)
+}
+export function controlWritingBatch(projectId: ID, action: 'pause' | 'resume' | 'stop'): Promise<BatchInfo & { ok: boolean }> {
+  return request('POST', `/projects/${projectId}/writing/batch/control`, { action })
 }

@@ -376,6 +376,9 @@ async def write_chapter_stream(project_id: str, body: WriteChapterRequest):
     proj_exists = await fetch_one(await get_db(), "SELECT id FROM projects WHERE id = ?", (project_id,))
     if not proj_exists:
         raise HTTPException(status_code=404, detail="Project not found")
+    info = _batch_info(project_id)
+    if info and info["active"] and not body.chapter:
+        raise HTTPException(status_code=409, detail="连续写作任务进行中，请先暂停/停止后再单独写章")
     return StreamingResponse(
         _write_chapter_generator(project_id, body.user_hint, body.regenerate, body.fast, body.chapter),
         media_type="application/x-ndjson",
@@ -498,12 +501,27 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
             )
         else:
             sort_order = await next_sort_order(db, project_id)
-            await db.execute(
-                """INSERT INTO workspace_items
-                   (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
-                   VALUES (?, ?, 'chapter', 'draft', ?, '', '{}', ?, ?)""",
-                (draft_id, project_id, chapter_title, chapter_number, sort_order),
-            )
+            try:
+                await db.execute(
+                    """INSERT INTO workspace_items
+                       (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
+                       VALUES (?, ?, 'chapter', 'draft', ?, '', '{}', ?, ?)""",
+                    (draft_id, project_id, chapter_title, chapter_number, sort_order),
+                )
+            except Exception:
+                # 并发撞号：改用 MAX+1 重试一次
+                mx = await fetch_one(
+                    db,
+                    "SELECT MAX(chapter_number) m FROM workspace_items WHERE project_id=? AND item_type='chapter'",
+                    (project_id,),
+                )
+                chapter_number = int(mx["m"] or 0) + 1
+                await db.execute(
+                    """INSERT INTO workspace_items
+                       (id, project_id, item_type, status, title, content, metadata, chapter_number, sort_order)
+                       VALUES (?, ?, 'chapter', 'draft', ?, '', '{}', ?, ?)""",
+                    (draft_id, project_id, chapter_title, chapter_number, sort_order),
+                )
         await db.commit()
     except Exception:
         raise HTTPException(status_code=409, detail="该章正在写作中，请等待完成")
@@ -644,6 +662,98 @@ async def _save_chapter(db, project_id: str, chapter_number: int, title: str,
     return item_id
 
 
+# ============================================================
+# 服务端连续写作：可暂停/继续/停止，逐章推进（支持每章审阅暂停）
+# ============================================================
+_batch_state: dict[str, dict] = {}
+
+
+def _batch_info(pid: str) -> dict | None:
+    st = _batch_state.get(pid)
+    if not st:
+        return None
+    active = bool(st.get("task") and not st["task"].done())
+    return {"active": active, "stopped": bool(st["stop"]), "target": st["target"], "done": st["done"],
+            "paused": active and st["paused"],
+            "awaiting_review": active and st["paused"] and st["review_pending"],
+            "hint": st["hint"], "fast": st["fast"], "last_error": st.get("last_error")}
+
+
+async def _batch_loop(pid: str, target: int, hint: str, fast: bool, pause_each: bool):
+    import asyncio as _aio
+    st = _batch_state[pid]
+    try:
+        for _ in range(target):
+            if st["stop"]:
+                break
+            while st["paused"] and not st["stop"]:
+                await _aio.sleep(1)
+            if st["stop"]:
+                break
+            ok = False
+            async for line in _write_chapter_generator(pid, hint, False, fast):
+                try:
+                    obj = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if obj.get("error"):
+                    st["last_error"] = obj["error"]
+                if obj.get("done"):
+                    ok = True
+            if not ok:
+                break
+            st["done"] += 1
+            if pause_each and st["done"] < target:
+                st["review_pending"] = True
+                st["paused"] = True
+    finally:
+        st["task"] = None
+
+
+class BatchBody(BaseModel):
+    target: int = 3
+    hint: str = ""
+    fast: bool = False
+    pause_each: bool = False  # 每章写完自动暂停，等审阅后继续
+
+
+@router.post("/projects/{project_id}/writing/batch")
+async def start_writing_batch(project_id: str, body: BatchBody):
+    import asyncio as _aio
+    if _batch_info(project_id) or project_id in _writing_progress:
+        raise HTTPException(status_code=409, detail="已有写作任务在进行中")
+    if body.target < 1 or body.target > 40:
+        raise HTTPException(status_code=400, detail="目标章数须在 1-40 之间")
+    _batch_state[project_id] = {"target": body.target, "done": 0, "hint": body.hint, "fast": body.fast,
+                                "pause_each": body.pause_each, "paused": False, "stop": False,
+                                "review_pending": False, "task": None, "last_error": None}
+    st = _batch_state[project_id]
+    st["task"] = _aio.create_task(_batch_loop(project_id, body.target, body.hint, body.fast, body.pause_each))
+    return {"ok": True, **(_batch_info(project_id) or {})}
+
+
+class BatchControlBody(BaseModel):
+    action: str  # pause | resume | stop
+
+
+@router.post("/projects/{project_id}/writing/batch/control")
+async def control_writing_batch(project_id: str, body: BatchControlBody):
+    st = _batch_state.get(project_id)
+    if not st or not st.get("task"):
+        raise HTTPException(status_code=404, detail="没有进行中的写作任务")
+    if body.action == "pause":
+        st["paused"] = True
+    elif body.action == "resume":
+        st["paused"] = False
+        st["review_pending"] = False
+    elif body.action == "stop":
+        st["stop"] = True
+        st["paused"] = False
+    else:
+        raise HTTPException(status_code=400, detail="action 须为 pause/resume/stop")
+    return {"ok": True, **(_batch_info(project_id) or {})}
+
+
 @router.get("/projects/{project_id}/writing/tasks")
 async def writing_tasks(project_id: str):
     """写作任务列表：卷进度 / 字数不达标章节 / 缺脉络章节 / 空草稿。"""
@@ -745,6 +855,7 @@ async def writing_status(project_id: str):
     prog = _writing_progress.get(project_id)
     in_progress = bool(prog and _time.time() - prog["since"] < 900)  # 15分钟无更新视为过期
     return {
+        "batch": _batch_info(project_id),
         "in_progress": in_progress,
         "current_chapter": (prog or {}).get("chapter"),
         "current_title": (prog or {}).get("title"),

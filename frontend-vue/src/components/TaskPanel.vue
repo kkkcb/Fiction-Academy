@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
@@ -10,6 +10,11 @@ const store = useAppStore()
 const { currentProjectId, isWritingChapter, batchWriting } = storeToRefs(store)
 
 const tasks = ref<WritingTasks | null>(null)
+const dispatchTarget = ref(3)
+const dispatchHint = ref('')
+const dispatchFast = ref(false)
+const dispatchReview = ref(false)
+const dispatching = ref(false)
 const loading = ref(false)
 const rewriting = ref<number | null>(null)
 const weaving = ref(false)
@@ -24,6 +29,36 @@ async function pollLive() {
   try {
     live.value = await api.getWritingStatus(currentProjectId.value)
   } catch { /* 忽略 */ }
+}
+
+const batch = computed(() => live.value?.batch || null)
+
+async function dispatch() {
+  if (!currentProjectId.value || dispatching.value) return
+  dispatching.value = true
+  try {
+    await api.startWritingBatch(currentProjectId.value, {
+      target: dispatchTarget.value, hint: dispatchHint.value.trim(),
+      fast: dispatchFast.value, pause_each: dispatchReview.value,
+    })
+    dispatchHint.value = ''
+    store.notifySuccess('任务已派发')
+    pollLive()
+  } catch (e) {
+    store.error = (e as Error).message
+  } finally {
+    dispatching.value = false
+  }
+}
+
+async function control(action: 'pause' | 'resume' | 'stop') {
+  if (!currentProjectId.value) return
+  try {
+    await api.controlWritingBatch(currentProjectId.value, action)
+    pollLive()
+  } catch (e) {
+    store.error = (e as Error).message
+  }
 }
 
 async function load() {
@@ -93,6 +128,40 @@ onUnmounted(() => { if (liveTimer) clearInterval(liveTimer) })
           <span v-if="live.fast">（快速）</span>
           · 本书已 {{ live.chapters }} 章
         </span>
+      </div>
+
+      <!-- 批量任务控制 -->
+      <div v-if="batch?.active" class="task-card batch-card">
+        <div class="tc-head">
+          <span class="tc-name">连续任务 {{ batch.done }}/{{ batch.target }}</span>
+          <span class="tc-meta">
+            {{ batch.awaiting_review ? '第' + batch.done + ' 章完成，待审阅' : batch.paused ? '已暂停' : batch.fast ? '快速模式' : '精细模式' }}
+          </span>
+        </div>
+        <div class="tc-progress"><div class="tc-fill" :style="{ width: Math.min(batch.done / batch.target * 100, 100) + '%' }"></div></div>
+        <div v-if="batch.last_error" class="batch-err">{{ batch.last_error }}</div>
+        <div class="tc-actions">
+          <button v-if="batch.paused" class="btn btn-sm btn-primary" @click="control('resume')">继续</button>
+          <button v-else class="btn btn-sm" :disabled="!live?.in_progress" @click="control('pause')">写完本章后暂停</button>
+          <button class="btn btn-sm" @click="control('stop')">停止</button>
+        </div>
+      </div>
+
+      <!-- 派发新任务 -->
+      <div class="task-card">
+        <div class="tc-head">
+          <span class="tc-name">派发写作任务</span>
+          <span class="tc-meta" v-if="batch?.active">进行中，停止后可派发</span>
+        </div>
+        <div class="dispatch-form">
+          <label class="df-row">写几章 <input v-model.number="dispatchTarget" type="number" min="1" max="40" class="df-num" /></label>
+          <textarea v-model="dispatchHint" class="df-hint" rows="2" placeholder="要求（可选）：如 接下来重点写血神教冲突，节奏加快"></textarea>
+          <label class="df-check"><input v-model="dispatchReview" type="checkbox" /> 每章完成后暂停等我审阅</label>
+          <label class="df-check"><input v-model="dispatchFast" type="checkbox" /> 快速模式（约1分钟/章）</label>
+          <button class="btn btn-sm btn-primary" :disabled="!!batch?.active || dispatching" @click="dispatch">
+            <Rocket :size="12" :stroke-width="1.75" /> {{ dispatching ? '派发中…' : '派发' }}
+          </button>
+        </div>
       </div>
 
       <!-- 卷进度 -->
@@ -186,4 +255,14 @@ onUnmounted(() => { if (liveTimer) clearInterval(liveTimer) })
   animation: livePulse 1.2s ease-in-out infinite;
 }
 @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+</style>
+
+<style scoped>
+.batch-card { border-left: 3px solid var(--accent); }
+.batch-err { font-size: 11px; color: #dc2626; margin: 4px 0; }
+.dispatch-form { display: flex; flex-direction: column; gap: 8px; }
+.df-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+.df-num { width: 64px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; }
+.df-hint { padding: 6px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; resize: vertical; font-family: inherit; }
+.df-check { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
 </style>
