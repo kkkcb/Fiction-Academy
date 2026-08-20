@@ -334,11 +334,20 @@ CHAPTER_WRITER_SYSTEM_PROMPT = """你是一位顶尖网文作者，正在为番�
 7. 结尾必须落在断章钩子上，戛然而止，让读者忍不住点下一章
 8. 输出正文本身，不要章节号、不要标题、不要任何解释性文字
 
-文风铁律（参考职业写手的反AI味守则）：
-- 禁止翻译腔、禁止AI味：不用"仿佛在诉说着什么"“空气中弥漫着”“不禁”这类空洞套话
-- 禁止降智推进：反派和配角不犯蠢，冲突靠利益与信息差推动
-- 多用具体名词和动作，少用形容词堆叠；对话要有口语的毛边，不要人人腔调相同
-- 像一个老练的网文作者在码字，而不是AI在完成任务"""
+文风铁律（反AI检测 + 职业写手守则——平台用多维统计模型查AI，占比超10%即封）：
+一、高频词黑名单（每章出现不得超过2次）：
+  仿佛/宛如/似乎/不禁/一丝/格外/渐渐/淡淡/静静/悄然/瞬间/微微/轻轻/缓缓/弥漫/嘴角/眼神/忽然
+二、句式统计特征（检测模型直接量化）：
+  - 句长要有大幅波动：长句（30字+）和短句（5字内）交替出现，不能均匀
+  - 禁止三连排比（"X了，Y了，Z了"式）：每章最多2处
+  - 禁止"不是...而是..."句式
+  - 段落长短不齐：有的段三行，有的段一句
+三、人味锚点：
+  - 对话带口语碎片和毛边：省略、打断、答非所问、方言习惯
+  - 情绪通过动作和感官细节呈现，禁止直白说"愤怒""悲伤"
+  - 穿插具体到过分的细节（牌子、数量、气味、价格），AI 写不出这种"多余"
+  - 偶尔一句跑题的闲笔（环境或配角的小动作），不服务于主线
+四、禁止降智推进：反派和配角不犯蠢，冲突靠利益与信息差推动"""
 
 
 class WriteChapterRequest(BaseModel):
@@ -651,6 +660,60 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
     if not full_text.strip():
         yield emit({"error": "多次重试后模型仍未返回正文，请稍后再试"})
         return
+
+    # --- 3b. AI 痕迹体检（统计特征超标自动重写一次） ---
+    def _ai_check(text: str) -> str | None:
+        import re as _re
+        import statistics as _st
+        bad = []
+        for w in ["仿佛", "宛如", "似乎", "不禁", "一丝", "格外", "渐渐", "淡淡",
+                  "静静", "悄然", "瞬间", "微微", "轻轻", "缓缓", "弥漫", "嘴角", "眼神", "忽然"]:
+            if text.count(w) > 2:
+                bad.append(f"“{w}”x{text.count(w)}")
+        sents = [x.strip() for x in _re.split(r"[。！？]", text) if x.strip()]
+        lens = [len(x) for x in sents]
+        if len(lens) > 5:
+            cv = _st.stdev(lens) / _st.mean(lens)
+            if cv < 0.50:
+                bad.append(f"句长方差低({cv:.2f})")
+        tri = len(_re.findall(r"[一-鿿]{1,3}，[一-鿿]{1,3}，[一-鿿]{1,3}[，。]", text))
+        if tri > 4:
+            bad.append(f"三连排比x{tri}")
+        return "；".join(bad) if bad else None
+
+    ai_flags = _ai_check(full_text)
+    if ai_flags and not fast:
+        yield emit({"phase": "writing", "chapter_number": chapter_number, "chapter_title": chapter_title,
+                    "message": f"AI痕迹体检未过（{ai_flags}），人性化重写中…"})
+        try:
+            rewrite_prompt = (
+                f"以下是已写好的章节，但存在AI统计痕迹：{ai_flags}。\n\n"
+                "请重写这一章，要求：\n"
+                "1. 黑名单词每个最多出现1次或删除\n"
+                "2. 句长大幅波动：加入几句超过30字的长句和几个5字以内的短句\n"
+                "3. 删除三连排比，改为不对称的表达\n"
+                "4. 保持情节、人物、伏笔完全不变，只改文风\n"
+                f"\n原文：\n{full_text[:9000]}"
+            )
+            rewritten = ""
+            async for kind, chunk in chat_stream(
+                [{"role": "user", "content": rewrite_prompt}],
+                system_prompt="你是资深网文作者，擅长把AI味的稿子改出人味。保持情节不变，只调文风。",
+                temperature=0.9,
+            ):
+                if kind == "content":
+                    rewritten += chunk
+            if rewritten.strip() and len(rewritten) > len(full_text) * 0.7:
+                if not _ai_check(rewritten):
+                    full_text = rewritten
+                    yield emit({"phase": "writing", "message": "✓ 人性化重写完成"})
+                else:
+                    yield emit({"phase": "writing", "message": "重写仍有痕迹，保留原稿（可手动编辑）"})
+            else:
+                yield emit({"phase": "writing", "message": "重写过短，保留原稿"})
+        except Exception as e:
+            logger.warning("de-AI rewrite failed: %s", e)
+            yield emit({"phase": "writing", "message": "人性化重写失败，保留原稿"})
 
     # --- 4. 存档 + 钩子（编年史/摘要，后台异步） ---
     from backend.api.workspace import _spawn_bg, _trigger_chronicle_update, _generate_chapter_summary
