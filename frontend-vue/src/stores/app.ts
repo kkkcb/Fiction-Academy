@@ -539,14 +539,14 @@ export const useAppStore = defineStore('app', () => {
     writingAbort?.()
   }
 
-  function writeNextChapter(projectId: ID, regenerate = false, hint = '', fast = false): Promise<boolean> {
+  function writeNextChapter(projectId: ID, regenerate = false, hint = '', fast = false, chapter: number | null = null): Promise<boolean> {
     if (isWritingChapter.value) return Promise.resolve(false)
     return new Promise(resolve => {
-      _writeRun(projectId, regenerate, hint, fast, resolve)
+      _writeRun(projectId, regenerate, hint, fast, chapter, resolve)
     })
   }
 
-  async function _writeRun(projectId: ID, regenerate: boolean, hint: string, fast: boolean, done: (ok: boolean) => void) {
+  async function _writeRun(projectId: ID, regenerate: boolean, hint: string, fast: boolean, chapter: number | null, done: (ok: boolean) => void) {
     isWritingChapter.value = true
     writingContent.value = ''
     writingThinking.value = ''
@@ -554,7 +554,7 @@ export const useAppStore = defineStore('app', () => {
     writingChapterTitle.value = ''
     writingPhase.value = regenerate ? '正在准备重写本章…' : '正在准备写作…'
     centerView.value = 'writing'
-    writingAbort = api.streamWriteChapter(projectId, { user_hint: hint, regenerate, fast }, {
+    writingAbort = api.streamWriteChapter(projectId, { user_hint: hint, regenerate, fast, chapter: chapter ?? undefined }, {
       onPhase: meta => {
         writingPhase.value = meta.message || ''
         if (meta.chapter_number) writingChapterNumber.value = meta.chapter_number

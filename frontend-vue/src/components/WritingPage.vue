@@ -4,11 +4,13 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import WritingPanel from './WritingPanel.vue'
 import StoryWebPanel from './StoryWebPanel.vue'
+import TaskPanel from './TaskPanel.vue'
+import { ListTodo } from 'lucide-vue-next'
 import { Network, BookOpen } from 'lucide-vue-next'
 import { ChevronLeft } from 'lucide-vue-next'
 
 const store = useAppStore()
-const view = ref<'chapters' | 'web'>('chapters')
+const view = ref<'chapters' | 'web' | 'tasks'>('chapters')
 const { currentProject, currentProjectId, chapters, totalChapterWords } = storeToRefs(store)
 
 onMounted(() => {
@@ -37,9 +39,13 @@ onMounted(() => {
       <button class="wp-pill" :class="{ active: view === 'web' }" aria-label="脉络网视图" @click="view = 'web'">
         <Network :size="13" :stroke-width="1.75" /> 脉络网
       </button>
+      <button class="wp-pill" :class="{ active: view === 'tasks' }" aria-label="写作任务" @click="view = 'tasks'">
+        <ListTodo :size="13" :stroke-width="1.75" /> 任务
+      </button>
     </div>
     <WritingPanel v-if="view === 'chapters'" class="wp-body" />
-    <StoryWebPanel v-else class="wp-body" />
+    <StoryWebPanel v-else-if="view === 'web'" class="wp-body" />
+    <TaskPanel v-else class="wp-body" />
   </div>
 </template>
 

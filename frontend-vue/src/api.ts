@@ -515,7 +515,7 @@ export interface WriteChapterEvents {
 /** 一键写下一章：NDJSON 流（章纲阶段 phase → 正文 content → done） */
 export function streamWriteChapter(
   projectId: ID,
-  opts: { user_hint?: string; regenerate?: boolean; fast?: boolean },
+  opts: { user_hint?: string; regenerate?: boolean; fast?: boolean; chapter?: number },
   events: WriteChapterEvents,
 ): StreamAbort {
   const xhr = new XMLHttpRequest()
@@ -624,7 +624,7 @@ export function streamWriteChapter(
   }
 
   watchdog.touch()
-  xhr.send(JSON.stringify({ user_hint: opts.user_hint || '', regenerate: !!opts.regenerate, fast: !!opts.fast }))
+  xhr.send(JSON.stringify({ user_hint: opts.user_hint || '', regenerate: !!opts.regenerate, fast: !!opts.fast, chapter: opts.chapter ?? null }))
 
   return function abort() { xhr.abort() }
 }
@@ -777,4 +777,15 @@ export interface WritingLive {
 
 export function getWritingLive(projectId: ID): Promise<WritingLive> {
   return request<WritingLive>('GET', `/projects/${projectId}/writing/live`)
+}
+
+export interface WritingTaskDeficient { chapter: number; title: string; words: number; target: number }
+export interface WritingTasks {
+  volume: { target: number; done: number; total_words: number }
+  deficient: WritingTaskDeficient[]
+  missing_web: number
+  empty_draft_chapters: number[]
+}
+export function getWritingTasks(projectId: ID): Promise<WritingTasks> {
+  return request<WritingTasks>('GET', `/projects/${projectId}/writing/tasks`)
 }

@@ -343,8 +343,9 @@ CHAPTER_WRITER_SYSTEM_PROMPT = """你是一位顶尖网文作者，正在为番�
 
 class WriteChapterRequest(BaseModel):
     user_hint: str = ""
-    regenerate: bool = False  # True = 重写最新一章（旧稿在成功后被替换）
+    regenerate: bool = False  # True = 重写（默认最新一章；指定 chapter 则重写该章）
     fast: bool = False  # True = 关闭思考快速成稿（约1分钟）；默认精细模式（思考充分，约4-5分钟）
+    chapter: int | None = None  # 定点重写指定章（复用其章纲）
 
 
 async def _load_chronicle_digest(db, project_id: str) -> str:
@@ -376,7 +377,7 @@ async def write_chapter_stream(project_id: str, body: WriteChapterRequest):
     if not proj_exists:
         raise HTTPException(status_code=404, detail="Project not found")
     return StreamingResponse(
-        _write_chapter_generator(project_id, body.user_hint, body.regenerate, body.fast),
+        _write_chapter_generator(project_id, body.user_hint, body.regenerate, body.fast, body.chapter),
         media_type="application/x-ndjson",
     )
 
@@ -385,7 +386,7 @@ async def write_chapter_stream(project_id: str, body: WriteChapterRequest):
 _writing_progress: dict[str, dict] = {}
 
 
-async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: bool, fast: bool = False):
+async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: bool, fast: bool = False, target_chapter: int | None = None):
     import time as _time
     db = await get_db()
 
@@ -403,10 +404,10 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
         yield emit({"error": "骨架尚未建立，请先完成点位创作"})
         return
 
-    chapter_number = await _get_next_chapter_number(db, project_id)
     old_chapter_id = None
-    if regenerate and chapter_number > 1:
-        chapter_number -= 1
+    if target_chapter:
+        # 定点重写：复用该章已有章纲与条目
+        chapter_number = target_chapter
         old = await fetch_one(
             db,
             """SELECT id FROM workspace_items WHERE project_id = ? AND item_type = 'chapter'
@@ -414,6 +415,26 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
             (project_id, chapter_number),
         )
         old_chapter_id = old["id"] if old else None
+        plan_exists = await fetch_one(
+            db,
+            """SELECT id FROM workspace_items WHERE project_id = ? AND item_type = 'chapter_plan'
+               AND chapter_number = ?""",
+            (project_id, chapter_number),
+        )
+        if not plan_exists:
+            yield json.dumps({"error": f"第{chapter_number}章没有章纲，请先正常生成该章"}, ensure_ascii=False) + "\n"
+            return
+    else:
+        chapter_number = await _get_next_chapter_number(db, project_id)
+        if regenerate and chapter_number > 1:
+            chapter_number -= 1
+            old = await fetch_one(
+                db,
+                """SELECT id FROM workspace_items WHERE project_id = ? AND item_type = 'chapter'
+                   AND chapter_number = ?""",
+                (project_id, chapter_number),
+            )
+            old_chapter_id = old["id"] if old else None
 
     # --- 1. 章纲：没有就生成，草稿则直接定稿（写作流里章纲即确认） ---
     plan_row = await fetch_one(
@@ -428,6 +449,9 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
         if plan_row["status"] == "draft":
             await db.execute("UPDATE workspace_items SET status = 'finalized' WHERE id = ?", (plan_row["id"],))
             await db.commit()
+    elif target_chapter:
+        yield json.dumps({"error": f"第{chapter_number}章没有章纲，请先正常生成该章"}, ensure_ascii=False) + "\n"
+        return
     else:
         yield emit({"phase": "plan", "message": f"正在生成第{chapter_number}章章纲…"})
         try:
@@ -618,6 +642,62 @@ async def _save_chapter(db, project_id: str, chapter_number: int, title: str,
     await db.execute("UPDATE projects SET updated_at = datetime('now') WHERE id = ?", (project_id,))
     await db.commit()
     return item_id
+
+
+@router.get("/projects/{project_id}/writing/tasks")
+async def writing_tasks(project_id: str):
+    """写作任务列表：卷进度 / 字数不达标章节 / 缺脉络章节 / 空草稿。"""
+    import re as _re
+    db = await get_db()
+
+    # 卷一目标章数：从大纲 volumes 文本解析（如 "卷一《..》（1-40）"）
+    target = 40
+    outline = await fetch_one(
+        db, "SELECT metadata FROM workspace_items WHERE project_id = ? AND item_type = 'outline'", (project_id,))
+    if outline and outline["metadata"]:
+        try:
+            m = _re.search(r"卷一[^0-9]{0,20}(\d+)\s*-\s*(\d+)", json.loads(outline["metadata"]).get("volumes", ""))
+            if m:
+                target = int(m.group(2))
+        except (TypeError, ValueError):
+            pass
+
+    chs = await fetch_all(
+        db,
+        """SELECT c.chapter_number, c.title, c.status, LENGTH(c.content) words, c.metadata,
+                  (SELECT metadata FROM workspace_items p WHERE p.project_id = c.project_id
+                     AND p.item_type = 'chapter_plan' AND p.chapter_number = c.chapter_number) plan_meta
+           FROM workspace_items c
+           WHERE c.project_id = ? AND c.item_type = 'chapter' ORDER BY c.chapter_number""",
+        (project_id,),
+    )
+    done = [c for c in chs if c["status"] == "finalized"]
+    deficient = []
+    for c in done:
+        try:
+            est = int((json.loads(c["plan_meta"]) if c["plan_meta"] else {}).get("estimated_words") or 3200)
+        except (TypeError, ValueError):
+            est = 3200
+        if c["words"] < est * 85 // 100:
+            deficient.append({"chapter": c["chapter_number"], "title": c["title"] or "",
+                              "words": c["words"], "target": est})
+    missing_web = 0
+    for c in chs:
+        try:
+            meta = json.loads(c["metadata"]) if c["metadata"] else {}
+        except (TypeError, ValueError):
+            meta = {}
+        if not meta.get("web"):
+            missing_web += 1
+    empty_drafts = [c["chapter_number"] for c in chs if c["status"] == "draft" and c["words"] == 0]
+
+    return {
+        "volume": {"target": target, "done": len(done),
+                   "total_words": sum(c["words"] for c in done)},
+        "deficient": deficient,
+        "missing_web": missing_web,
+        "empty_draft_chapters": empty_drafts,
+    }
 
 
 @router.get("/projects/{project_id}/writing/live")
