@@ -200,7 +200,7 @@ def assemble_context(
             parts.append(f"<{tag}>\n" + "\n\n".join(body) + f"\n</{tag}>")
 
     if chronicle_text:
-        parts.append(f"<chronicle>\n{chronicle_text}\n</chronicle>")
+        parts.append(f"<编年史>\n{chronicle_text}\n</编年史>")
 
     prev_chapters = [p for p in story_pages if p["type"] == "chapter"]
     if prev_chapters:

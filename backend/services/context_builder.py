@@ -189,6 +189,8 @@ async def kg_section(req: ContextRequest) -> Section | None:
 
 
 async def settings_section(req: ContextRequest) -> Section | None:
+    if req.point == "__studio__":
+        return await _studio_skeleton_digest(req)
     db = await get_db()
     rows = await fetch_all(
         db,
@@ -216,7 +218,7 @@ async def chronicle_section(req: ContextRequest) -> Section | None:
     text = await load_chronicle_text(db, req.project_id)
     if not text:
         return None
-    return Section(tag="_chronicle", content=f"<chronicle>\n{text}\n</chronicle>", priority=3)
+    return Section(tag="_chronicle", content=f"<编年史>\n{text}\n</编年史>", priority=3)
 
 
 async def prev_chapters_section(req: ContextRequest) -> Section | None:
@@ -292,3 +294,22 @@ async def build_workspace_digest(project_id: str, per_item_limit: int = 800,
         content = (r["content"] or "")[:per_item_limit]
         parts.append(f"【{title}】{status_tag}\n{content}")
     return "\n\n".join(parts) if parts else "（项目尚无工作台条目）"
+
+
+async def _studio_skeleton_digest(req: ContextRequest) -> Section | None:
+    """studio 对话的骨架摘要：只给已定稿内容的精简版，不用引导性格式。"""
+    db = await get_db()
+    from backend.agents.guide import POINT_LABELS
+    rows = await fetch_all(
+        db,
+        "SELECT item_type, content FROM workspace_items WHERE project_id = ? AND item_type IN ('story_core','world_setting','character_setting','outline','outline_reverse','foreshadow') AND status IN ('locked','finalized') ORDER BY sort_order",
+        (req.project_id,),
+    )
+    if not rows:
+        return None
+    parts = []
+    for r in rows:
+        label = POINT_LABELS.get(r["item_type"], r["item_type"])
+        parts.append("【" + label + "】（已定稿）\n" + (r["content"] or "")[:500])
+    content = "## 已确定的设定（以下是事实，不是引导）\n\n" + "\n\n".join(parts)
+    return Section(tag="_settings", content=content, priority=3)
