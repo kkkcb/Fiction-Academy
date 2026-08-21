@@ -16,10 +16,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <Transition name="page" mode="out-in">
-    <ProjectsPage v-if="route === 'projects'" key="projects" />
-    <WritingPage v-else-if="route === 'writing'" key="writing" />
-    <WorkspacePage v-else key="workspace" />
-  </Transition>
+  <!-- 不加路由过渡动画：页面处于后台/被遮挡时 Vue 过渡的 rAF 会停转，
+       leave 阶段永久卡住，表现为「点了没反应」。瞬时切换最稳。 -->
+  <ProjectsPage v-if="route === 'projects'" />
+  <WritingPage v-else-if="route === 'writing'" />
+  <WorkspacePage v-else />
   <ToastHost />
 </template>

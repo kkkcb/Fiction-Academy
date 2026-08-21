@@ -4,7 +4,6 @@ import { storeToRefs } from 'pinia'
 import type { ID, Conversation } from '../types'
 import { useAppStore } from '../stores/app'
 import { POINT_NAV, relativeTime } from '../utils/format'
-import IconCheck from './icons/IconCheck.vue'
 import IconTrash from './icons/IconTrash.vue'
 import { ChevronLeft, Plus, BrainCircuit, PanelLeftClose, PanelLeftOpen, MessageSquareText, ChevronDown } from 'lucide-vue-next'
 
@@ -146,11 +145,11 @@ function onSelectAssistant(e: Event) {
       </div>
       <button
         v-show="!sectionCollapsed.points"
-        class="point-nav-item studio-nav"
-        :class="{ active: activeMode === 'free' && !centerView }"
+        class="mode-nav-item"
+        :class="{ active: centerView !== 'writing' }"
         @click="store.openStudio(currentProjectId!)"
       >
-        <span class="point-nav-dot done"><IconCheck :size="10" /></span>
+        <span class="mode-nav-icon"><MessageSquareText :size="15" :stroke-width="1.75" /></span>
         <div class="point-nav-text">
           <span class="point-nav-name">创作对话</span>
           <span class="point-nav-desc">与作者讨论 · 补全骨架</span>
@@ -159,12 +158,12 @@ function onSelectAssistant(e: Event) {
 
       <button
         v-show="!sectionCollapsed.points"
-        class="write-nav-item"
+        class="mode-nav-item"
         :class="{ active: centerView === 'writing' }"
         aria-label="进入小说写作"
         @click="store.openWriting()"
       >
-        <BrainCircuit class="write-nav-icon" :size="16" :stroke-width="1.75" />
+        <span class="mode-nav-icon"><BrainCircuit :size="15" :stroke-width="1.75" /></span>
         <div class="point-nav-text">
           <span class="point-nav-name">小说写作</span>
           <span class="point-nav-desc">{{ chapters.length ? `已写 ${chapters.length} 章` : '骨架就绪后开写' }}</span>

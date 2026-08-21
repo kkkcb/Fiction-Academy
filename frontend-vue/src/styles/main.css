@@ -209,10 +209,6 @@ body {
   50% { content: '..'; }
   75% { content: '...'; }
 }
-@keyframes pointPulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.5); opacity: 0.5; }
-}
 @keyframes archivePulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
@@ -1532,71 +1528,75 @@ body {
   padding: var(--space-2) var(--space-3);
   margin-bottom: var(--space-1);
 }
-.point-nav-item {
+/* 创作流程两个入口：统一的图标卡片 */
+.mode-nav-item {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: 10px var(--space-3);
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
+  background: transparent;
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+  font-family: inherit;
+  text-align: left;
   position: relative;
 }
-.point-nav-item:hover { background: var(--bg-hover); }
-.point-nav-item.active {
+.mode-nav-item + .mode-nav-item { margin-top: 4px; }
+.mode-nav-item:hover { background: var(--bg-hover); }
+.mode-nav-item.active {
   background: var(--accent-light);
+  border-color: var(--accent-border);
 }
-.point-nav-item.active::before {
+.mode-nav-item.active::before {
   content: "";
   position: absolute;
-  left: 0;
+  left: -1px;
   top: 8px;
   bottom: 8px;
   width: 3px;
   background: var(--accent);
   border-radius: var(--radius-full);
 }
-.point-nav-dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--text-tertiary);
+.mode-nav-icon {
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--status-finalized);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  transition: background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
-.point-nav-dot.done {
-  background: var(--status-finalized);
-  border-color: var(--status-finalized);
-}
-.point-nav-dot.active {
+.mode-nav-item.active .mode-nav-icon {
   background: var(--accent);
-  border-color: var(--accent);
-}
-.point-nav-pulse {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #fff;
-  animation: pointPulse 1.5s ease-in-out infinite;
+  color: #fff;
 }
 .point-nav-text {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0;
 }
 .point-nav-name {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
 }
-.point-nav-item.active .point-nav-name { color: var(--accent); }
+.mode-nav-item.active .point-nav-name { color: var(--accent); }
 .point-nav-desc {
   font-size: 11px;
   color: var(--text-tertiary);
   margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-divider {
@@ -2083,10 +2083,7 @@ body {
   }
 }
 
-.page-enter-from { opacity: 0; transform: translateY(8px); }
-.page-enter-active { transition: all 0.35s var(--ease-out); }
-.page-leave-to { opacity: 0; transform: translateY(-4px); }
-.page-leave-active { transition: all 0.2s var(--ease-out); }
+/* 路由过渡已移除（后台/遮挡时 rAF 停转导致 leave 永久卡死） */
 
 /* ===== UX 优化补充 ===== */
 /* 消息时间戳与字数 */
@@ -2312,28 +2309,7 @@ body {
 /* 头部按钮激活态（面板折叠） */
 .theme-toggle.active { color: var(--accent); }
 
-/* ===== Sidebar 写作入口 ===== */
-.write-nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  padding: 10px var(--space-3);
-  margin-top: 6px;
-  border: 1px dashed var(--accent-border);
-  border-radius: var(--radius-md);
-  background: transparent;
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
-  font-family: inherit;
-  text-align: left;
-}
-.write-nav-item:hover { background: var(--bg-hover); }
-.write-nav-item.active {
-  background: var(--accent-light);
-  border-style: solid;
-}
-.write-nav-icon { font-size: 14px; line-height: 1; }
+/* ===== Sidebar 写作入口（已并入 .mode-nav-item） ===== */
 
 /* ===== 写作面板宿主 ===== */
 .writing-host {
