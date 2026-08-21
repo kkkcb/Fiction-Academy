@@ -115,6 +115,28 @@ async def delete_conversation(conversation_id: str):
     return {"ok": True}
 
 
+@router.post("/projects/{project_id}/studio/ensure")
+async def ensure_studio_conversation(project_id: str):
+    """创建/获取项目的统一创作对话（单一对话框，作者驱动，覆盖全部点位）。"""
+    db = await get_db()
+    # 找已有的 studio 对话
+    row = await fetch_one(
+        db,
+        "SELECT id FROM conversations WHERE project_id = ? AND point = '__studio__'",
+        (project_id,),
+    )
+    if row:
+        return {"conversation_id": row["id"]}
+    import uuid as _uuid
+    cid = str(_uuid.uuid4())
+    await db.execute(
+        "INSERT INTO conversations (id, project_id, title, point) VALUES (?, ?, ?, '__studio__')",
+        (cid, project_id, "创作对话"),
+    )
+    await db.commit()
+    return {"conversation_id": cid}
+
+
 @router.post("/conversations/{conversation_id}/chat/stream")
 async def stream_chat(conversation_id: str, body: ChatRequest):
     db = await get_db()
@@ -195,10 +217,37 @@ async def _chat_stream_generator(
     # 基础人格优先级：显式选择的助理 > 点位专属角色 > 默认助手
     if system_prompt_override:
         base_prompt = system_prompt_override
+    elif point == "__studio__":
+        # 统一创作对话：按书的题材注入作者人格
+        from backend.agents.authors import resolve_author_for_genre, get_author
+        proj = await fetch_one(db, "SELECT genre FROM projects WHERE id = ?", (conv["project_id"],))
+        author = get_author(resolve_author_for_genre((proj or {}).get("genre", "")))
+        base_prompt = (
+            author["style_dna"]
+            + "\n\n你现在是作者「" + author["name"] + "」，正在和用户一起创作这部小说。"
+            + "你可以讨论任何点位的设定，引导用户完善骨架。当前已定稿的点位和缺失的要点见下方上下文。"
+        )
     elif point in POINT_PERSONAS:
         base_prompt = POINT_PERSONAS[point][1]
     else:
         base_prompt = SYSTEM_PROMPT
+
+    # studio 对话：追加骨架进度总览（哪些点位定稿了，哪些还缺）
+    if point == "__studio__":
+        ws_rows = await fetch_all(
+            db,
+            """SELECT item_type FROM workspace_items
+               WHERE project_id = ? AND item_type IN ('story_core','world_setting','character_setting','outline_reverse','outline')
+                 AND status IN ('finalized','locked')""",
+            (conv["project_id"],),
+        )
+        done_types = {r["item_type"] for r in ws_rows}
+        all_types = ["story_core", "world_setting", "character_setting", "outline_reverse", "outline"]
+        labels = {"story_core": "故事核", "world_setting": "世界观", "character_setting": "核心人物",
+                  "outline_reverse": "倒推大纲", "outline": "正向大纲"}
+        status_lines = ["- " + labels[t] + "：" + ("✅ 已定稿" if t in done_types else "⬜ 未完成") for t in all_types]
+        skeleton_overview = "## 当前骨架进度\n" + "\n".join(status_lines)
+        context_body = (context_body + "\n\n" + skeleton_overview) if context_body else skeleton_overview
 
     final_system_prompt = (base_prompt + "\n\n" + context_body) if context_body else base_prompt
 
