@@ -1153,8 +1153,10 @@ export const useAppStore = defineStore('app', () => {
       const pointsData = await fetchPoints(pid)
       if (token !== _navToken) return
 
-      const startPoint = pointsData?.current_point || 'story_core'
-      await selectPoint(pid, startPoint)
+      // 进项目直接进统一创作对话（不再走旧点位流程，避免生成引导式开场白）
+      const r = await api.ensureStudioConversation(pid)
+      if (token !== _navToken) return
+      await selectConversation(r.conversation_id)
     }
   }
 
