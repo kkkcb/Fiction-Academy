@@ -599,7 +599,7 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
             _author = _get_author(resolve_author_for_genre((proj or {}).get("genre", "")))
             _writer_persona = _author["style_dna"]
             yield emit({"phase": "writing", "chapter_number": chapter_number,
-                        "message": f"执笔作者：{_author['name']}（{_author['label']}）"})
+                        "message": f"执笔：{_author['name']}·{_author['pen_name']}（{_author['label']}）"})
 
             async for kind, chunk in chat_stream(
                 messages,

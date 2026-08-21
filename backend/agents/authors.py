@@ -10,8 +10,9 @@
 
 AUTHORS: dict[str, dict] = {
     "fanren": {
-        "name": "凡人客",
+        "name": "陈砚",
         "label": "凡人流·仙侠",
+        "pen_name": "守拙",
         "genre": "仙侠修真",
         "reference": "凡人修仙传（忘语）",
         "style_dna": """## 你的文风（凡人流·白描务实）
@@ -45,8 +46,9 @@ AUTHORS: dict[str, dict] = {
     },
 
     "dushi": {
-        "name": "都市刀客",
+        "name": "赵铁锋",
         "label": "都市·爽文流",
+        "pen_name": "快刀",
         "genre": "都市爽文",
         "reference": "都市极品医神/超品相师等（鹅是老五/鱼人二代）",
         "style_dna": """## 你的文风（都市爽文·快节奏强反馈）
@@ -79,8 +81,9 @@ AUTHORS: dict[str, dict] = {
     },
 
     "xuanyi": {
-        "name": "悬疑手",
+        "name": "顾城深",
         "label": "悬疑·推理流",
+        "pen_name": "暗河",
         "genre": "悬疑推理",
         "reference": "清明上河图密码/白夜行类",
         "style_dna": """## 你的文风（悬疑推理·信息控制）
@@ -112,8 +115,9 @@ AUTHORS: dict[str, dict] = {
     },
 
     "qingxia": {
-        "name": "轻侠客",
+        "name": "叶知秋",
         "label": "轻松·日常流",
+        "pen_name": "咸鱼",
         "genre": "轻松日常",
         "reference": "大王饶命/我师兄实在太稳健了（言归正传/国王陛下）",
         "style_dna": """## 你的文风（轻松日常·吐槽流）
@@ -146,8 +150,9 @@ AUTHORS: dict[str, dict] = {
     },
 
     "kehuan": {
-        "name": "硬核笔",
+        "name": "江星辰",
         "label": "科幻·硬核流",
+        "pen_name": "引力",
         "genre": "科幻",
         "reference": "三体/球状闪电（刘慈欣）",
         "style_dna": """## 你的文风（硬核科幻·宏大叙事）
