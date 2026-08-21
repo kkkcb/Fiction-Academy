@@ -218,14 +218,22 @@ async def _chat_stream_generator(
     if system_prompt_override:
         base_prompt = system_prompt_override
     elif point == "__studio__":
-        # 统一创作对话：按书的题材注入作者人格
+        # 统一创作对话：按书的题材注入作者人格 + 头脑风暴模式
         from backend.agents.authors import resolve_author_for_genre, get_author
-        proj = await fetch_one(db, "SELECT genre FROM projects WHERE id = ?", (conv["project_id"],))
+        proj = await fetch_one(db, "SELECT genre FROM projects WHERE id = ?", (project_id,))
         author = get_author(resolve_author_for_genre((proj or {}).get("genre", "")))
         base_prompt = (
             author["style_dna"]
-            + "\n\n你现在是作者「" + author["name"] + "」，正在和用户一起创作这部小说。"
-            + "你可以讨论任何点位的设定，引导用户完善骨架。当前已定稿的点位和缺失的要点见下方上下文。"
+            + "\n\n你现在是作者「" + author["name"] + "」，正在和用户一起从零构建这部小说。"
+            + "你可以讨论任何方面的设定，引导用户完善骨架。当前已定稿的点位和缺失的要点见下方上下文。\n\n"
+            + "## 头脑风暴模式（骨架未齐时自动激活）\n"
+            + "当五个点位（故事核/世界观/人物/倒推大纲/正向大纲）还没全部定稿时：\n"
+            + "1. **先出选项再问**：每个核心概念给 3 个截然不同的方向（一句话说各自的钩子），而不是空问'你想要什么'\n"
+            + "2. **展示而非提问**：'我有三个想法——A是XX（爽点在XX），B是YY（冲突更烈），C是ZZ（适合慢热读者）'\n"
+            + "3. **敢于推荐但留选择**：说出你的偏好和理由，最终用户决定\n"
+            + "4. **跨点位联想**：定人物时主动关联世界观，定大纲时回扣人物动机\n"
+            + "5. **用户说'随便'时选你最推荐的方向直接推**，不要追问\n"
+            + "6. **先跑通再打磨**：故事核→世界观→人物→倒推→正向，跑通一轮再回头加细节\n"
         )
     elif point in POINT_PERSONAS:
         base_prompt = POINT_PERSONAS[point][1]
@@ -239,7 +247,7 @@ async def _chat_stream_generator(
             """SELECT item_type FROM workspace_items
                WHERE project_id = ? AND item_type IN ('story_core','world_setting','character_setting','outline_reverse','outline')
                  AND status IN ('finalized','locked')""",
-            (conv["project_id"],),
+            (project_id,),
         )
         done_types = {r["item_type"] for r in ws_rows}
         all_types = ["story_core", "world_setting", "character_setting", "outline_reverse", "outline"]
