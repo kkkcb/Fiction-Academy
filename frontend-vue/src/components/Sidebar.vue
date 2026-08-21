@@ -217,7 +217,7 @@ function onSelectAssistant(e: Event) {
         暂无自由对话<br />点击右上角 + 随时开聊
       </div>
 
-      <template v-if="legacyPointConversations.length > 0">
+      <template v-if="false && legacyPointConversations.length > 0">
         <div class="conv-header legacy-header">
           <span>点位对话（旧）</span>
         </div>
