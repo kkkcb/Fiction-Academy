@@ -20,7 +20,7 @@ watch(mainView, v => {
 })
 const creating = ref(false)
 const newName = ref('')
-const newGenre = ref('玄幻')
+const newGenre = ref('')
 const nameInputEl = ref<HTMLInputElement | null>(null)
 
 const genres = ['玄幻', '都市', '科幻', '悬疑', '历史', '言情', '其他']
@@ -57,7 +57,7 @@ async function handleCreate() {
   creating.value = true
   try {
     // 名称可留空：后端默认「未命名作品」，确定故事核后 AI 自动命名
-    const p = await store.createProject(newName.value.trim(), newGenre.value)
+    const p = await store.createProject(newName.value.trim(), newGenre.value || '')
     if (p) {
       newName.value = ''
       showCreate.value = false
@@ -195,7 +195,7 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
           placeholder="书名（可留空，AI 会在确定故事核时起名）"
           @keydown.enter="handleCreate"
         />
-        <div class="genre-pills" role="radiogroup" aria-label="选择类型">
+        <div class="genre-pills" role="radiogroup" aria-label="选择类型（可跳过，后续对话确认）">
           <button
             v-for="g in genres"
             :key="g"
