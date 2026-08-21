@@ -233,13 +233,6 @@ function onSelectAssistant(e: Event) {
         </div>
       </template>
     </div>
-
-    <div v-if="assistants.length > 0" class="assistant-section">
-      <select class="assistant-select" aria-label="选择助理" :value="currentAssistantId" @change="onSelectAssistant">
-        <option value="">默认 · 跟随点位</option>
-        <option v-for="a in assistants" :key="a.id" :value="a.id">{{ a.name }}</option>
-      </select>
-    </div>
       </template>
   </aside>
 </template>
