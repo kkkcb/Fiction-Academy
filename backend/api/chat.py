@@ -137,6 +137,125 @@ async def ensure_studio_conversation(project_id: str):
     return {"conversation_id": cid}
 
 
+@router.post("/projects/{project_id}/studio/build")
+async def studio_build_skeleton(project_id: str):
+    """从创作对话历史一键生成全部骨架点位（故事核→世界观→人物→倒推→正向）。"""
+    import asyncio as _aio
+    import uuid as _uuid
+    from backend.agents.chapter_plan import generate_chapter_plan, format_chapter_plan_markdown
+    from backend.services import repo as _repo
+
+    db = await get_db()
+
+    # 1. 取 studio 对话全文作为上下文
+    conv = await fetch_one(db, "SELECT id FROM conversations WHERE project_id = ? AND point = '__studio__'", (project_id,))
+    if not conv:
+        raise HTTPException(status_code=404, detail="没有创作对话，请先和作者聊聊你的故事")
+    msgs = await fetch_all(
+        db,
+        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
+        (conv["id"],),
+    )
+    if len(msgs) < 2:
+        raise HTTPException(status_code=400, detail="对话内容太少，多聊几句再生成")
+    conversation_text = "\n".join(
+        ("用户：" if m["role"] == "user" else "作者：") + (m["content"] or "")[:300] for m in msgs[-30:]
+    )
+
+    # 2. 已定稿的点位跳过
+    existing = await fetch_all(
+        db,
+        "SELECT item_type FROM workspace_items WHERE project_id = ? AND status IN ('finalized','locked') AND item_type IN ('story_core','world_setting','character_setting','outline_reverse','outline')",
+        (project_id,),
+    )
+    done = {r["item_type"] for r in existing}
+
+    # 3. 逐个生成（带对话上下文）
+    POINT_SEQUENCES = ["story_core", "world_setting", "character_setting", "outline_reverse", "outline"]
+    generated = []
+    errors = []
+
+    from backend.agents.base import chat_json
+    from backend.api.points import AUTO_GENERATE_SYSTEM_PROMPT
+    from backend.agents.guide import POINT_LABELS
+    from backend.agents.guide_prompts import POINT_CONFIGS
+
+    for pt in POINT_SEQUENCES:
+        if pt in done:
+            continue
+        label = POINT_LABELS.get(pt, pt)
+        config = POINT_CONFIGS.get(pt, {})
+        fields_hint = json.dumps(config.get("fields", {}), ensure_ascii=False, indent=2)
+
+        # 前序已生成的内容作为背景
+        bg_parts = []
+        bg_rows = await fetch_all(
+            db,
+            "SELECT item_type, content, metadata FROM workspace_items WHERE project_id = ? AND item_type IN ('story_core','world_setting','character_setting','outline_reverse','outline') AND status IN ('finalized','locked') ORDER BY sort_order",
+            (project_id,),
+        )
+        for r in bg_rows:
+            bg_parts.append(
+                "【" + POINT_LABELS.get(r["item_type"], r["item_type"]) + "】\n" + (r["content"] or "")[:400]
+            )
+        background = "\n\n".join(bg_parts) if bg_parts else "（无前序设定）"
+
+        prompt = (
+            "以下是作者和用户关于这部小说的完整对话记录，请从中抽离出【" + label + "】的结构化设定。\n\n"
+            "## 对话记录\n" + conversation_text[:6000] + "\n\n"
+            "## 已确定的其他设定（保持一致）\n" + background + "\n\n"
+            "## 该点位需要生成的字段\n" + fields_hint + "\n\n"
+            "请基于对话内容直接生成。对话中用户明确表达的偏好必须遵守；用户没提到的部分你补全。"
+            "大胆创作，让内容有网文味、有冲突、有爽点。\n\n"
+            '输出 JSON：{"summary": "300-600字连贯设定", "fields": {}}'
+        )
+
+        try:
+            result = await chat_json(
+                messages=[{"role": "user", "content": prompt}],
+                system_prompt=AUTO_GENERATE_SYSTEM_PROMPT,
+                temperature=0.8,
+            )
+            summary = result.get("summary", "")
+            fields = result.get("fields", {})
+            if not isinstance(fields, dict):
+                fields = {}
+
+            item_id = str(_uuid.uuid4())
+            sort_order = await _repo.next_sort_order(db, project_id)
+            await db.execute(
+                """INSERT INTO workspace_items
+                   (id, project_id, item_type, status, title, content, metadata, sort_order)
+                   VALUES (?, ?, ?, 'finalized', ?, ?, ?, ?)""",
+                (item_id, project_id, pt, label, summary, json.dumps(fields, ensure_ascii=False), sort_order),
+            )
+            await db.commit()
+
+            # 自动命名
+            if pt == "story_core":
+                new_name = await _repo.maybe_apply_book_name(db, project_id, fields)
+                if new_name:
+                    logger.info("[studio-build] auto-named to %r", new_name)
+
+            generated.append({"point": pt, "label": label, "chars": len(summary)})
+        except Exception as e:
+            logger.error("[studio-build] %s failed: %s", pt, e)
+            errors.append(f"{label}: {str(e)[:80]}")
+
+    # 4. 写入一条总结消息到对话
+    if generated:
+        summary_lines = ["✅ " + g["label"] + "（" + str(g["chars"]) + "字）" for g in generated]
+        text = "骨架生成完成！\n\n" + "\n".join(summary_lines)
+        if errors:
+            text += "\n\n⚠ " + "; ".join(errors)
+        text += "\n\n可以去「小说写作」开始第一章了。"
+        await _repo.save_message(db, conv["id"], "assistant", text)
+        await db.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?", (conv["id"],))
+        await db.commit()
+
+    return {"ok": True, "generated": generated, "skipped": list(done), "errors": errors}
+
+
 @router.post("/conversations/{conversation_id}/chat/stream")
 async def stream_chat(conversation_id: str, body: ChatRequest):
     db = await get_db()
@@ -218,24 +337,22 @@ async def _chat_stream_generator(
     if system_prompt_override:
         base_prompt = system_prompt_override
     elif point == "__studio__":
-        # 统一创作对话：按书的题材注入作者人格 + 头脑风暴模式
+        # 统一创作对话：自然自由聊天，不引导点位顺序，聊完一键抽离骨架
         from backend.agents.authors import resolve_author_for_genre, get_author
         proj = await fetch_one(db, "SELECT genre FROM projects WHERE id = ?", (project_id,))
         author = get_author(resolve_author_for_genre((proj or {}).get("genre", "")))
         base_prompt = (
             author["style_dna"]
-            + "\n\n你现在是作者「" + author["name"] + "」，正在和用户一起从零构建这部小说。"
-            + "你可以讨论任何方面的设定，引导用户完善骨架。当前已定稿的点位和缺失的要点见下方上下文。\n\n"
-            + "## 头脑风暴模式（骨架未齐时自动激活）\n"
-            + "当五个点位（故事核/世界观/人物/倒推大纲/正向大纲）还没全部定稿时：\n"
-            + "1. **先出选项再问**：每个核心概念给 3 个截然不同的方向（一句话说各自的钩子），而不是空问'你想要什么'\n"
-            + "2. **展示而非提问**：'我有三个想法——A是XX（爽点在XX），B是YY（冲突更烈），C是ZZ（适合慢热读者）'\n"
-            + "3. **敢于推荐但留选择**：说出你的偏好和理由，最终用户决定\n"
-            + "4. **跨点位联想**：定人物时主动关联世界观，定大纲时回扣人物动机\n"
-            + "5. **用户说'随便'时选你最推荐的方向直接推**，不要追问\n"
-            + "6. **先跑通再打磨**：故事核→世界观→人物→倒推→正向，跑通一轮再回头加细节\n"
-            + "7. **串行+并行**：故事核定后，世界观和人物并行出方案（互为约束）；世界观+人物齐后，正向大纲和倒推大纲同时生成\n"
-            + "8. **交叉校验**：每定一个点位时检查与其他点位的契合——人物动机匹配世界观规则、大纲节点回扣人物红线、世界观硬限制不被人物能力突破。发现矛盾当场指出并给修复方案\n"
+            + "\n\n你现在是作者「" + author["name"] + "」，正在和用户聊一个想写的故事。"
+            + "这不是填表，是一场自然的天马行空的创作对话。\n\n"
+            + "## 你的行为方式\n"
+            + "- **像朋友聊天**：用户说想法时你接梗、发散、补充，不像审稿人在过流程\n"
+            + '- **不提「点位」「骨架」「故事核」这些系统术语**——就聊故事本身：主角是谁、世界什么样、冲突在哪、结局怎么收\n'
+            + "- **聊天中自然覆盖**：随着对话深入，故事的核、世界观、人物、情节线会自然浮现，不需要按顺序\n"
+            + "- **给选项不给问卷**：聊到关键设定时给2-3个截然不同的方向让用户挑，而不是空问'你想要什么'\n"
+            + "- **用户说'随便'时直接推你最推荐的方向**，不追问\n"
+            + "- **觉得故事差不多了时**，主动说'我觉得骨架差不多了，要不要我帮你生成结构化的骨架？'——用户同意后提示他输入 /build 或点按钮\n"
+            + "\n当前骨架状态见下方上下文（已定稿的点位无需重复讨论）。\n"
         )
     elif point in POINT_PERSONAS:
         base_prompt = POINT_PERSONAS[point][1]
