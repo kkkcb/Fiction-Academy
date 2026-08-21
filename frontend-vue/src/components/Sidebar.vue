@@ -109,16 +109,12 @@ function onSelectAssistant(e: Event) {
       <div class="rail-avatar" data-tip="展开侧栏">{{ (currentProject?.name || '未').slice(0, 1) }}</div>
       <div class="rail-sep"></div>
       <button
-        v-for="p in POINT_NAV"
-        :key="p.key"
-        class="rail-btn rail-dot"
-        :class="[pointStatus(p.key), { active: currentPoint === p.key && isPointMode }]"
-        :data-tip="`${p.label} · ${pointStatus(p.key) === 'done' ? '已完成' : pointStatus(p.key) === 'active' ? '进行中' : '未开始'}`"
-        :aria-label="p.label"
-        @click="store.selectPoint(currentProjectId!, p.key)"
+        class="rail-btn"
+        data-tip="创作对话 · 与作者讨论"
+        aria-label="创作对话"
+        @click="store.openStudio(currentProjectId!)"
       >
-        <IconCheck v-if="pointStatus(p.key) === 'done'" :size="14" :stroke-width="2" />
-        <span v-else class="rail-dot-empty"></span>
+        <MessageSquareText :size="16" :stroke-width="1.75" />
       </button>
       <button class="rail-btn" :class="{ active: centerView === 'writing' }" data-tip="小说写作" aria-label="进入小说写作" @click="store.openWriting()">
         <BrainCircuit :size="16" :stroke-width="1.75" />
@@ -148,23 +144,18 @@ function onSelectAssistant(e: Event) {
         <ChevronDown :size="12" :stroke-width="1.75" class="section-arrow" :class="{ folded: sectionCollapsed.points }" />
         创作流程
       </div>
-      <div
-        v-for="p in POINT_NAV"
+      <button
         v-show="!sectionCollapsed.points"
-        :key="p.key"
-        class="point-nav-item"
-        :class="{ active: currentPoint === p.key && isPointMode }"
-        @click="store.selectPoint(currentProjectId!, p.key)"
+        class="point-nav-item studio-nav"
+        :class="{ active: activeMode === 'free' && !centerView }"
+        @click="store.openStudio(currentProjectId!)"
       >
-        <span class="point-nav-dot" :class="pointStatus(p.key)">
-          <IconCheck v-if="pointStatus(p.key) === 'done'" :size="10" />
-          <span v-else-if="pointStatus(p.key) === 'active'" class="point-nav-pulse"></span>
-        </span>
+        <span class="point-nav-dot done"><IconCheck :size="10" /></span>
         <div class="point-nav-text">
-          <span class="point-nav-name">{{ p.label }}</span>
-          <span class="point-nav-desc">{{ p.desc }}</span>
+          <span class="point-nav-name">创作对话</span>
+          <span class="point-nav-desc">与作者讨论 · 补全骨架</span>
         </div>
-      </div>
+      </button>
 
       <button
         v-show="!sectionCollapsed.points"

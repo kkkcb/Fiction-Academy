@@ -526,6 +526,19 @@ export const useAppStore = defineStore('app', () => {
     navigateTo(lastProjectMode(pid), { currentProjectId: pid })
   }
 
+  /** 打开统一创作对话（单一对话框，作者驱动，覆盖全部点位） */
+  async function openStudio(pid: ID) {
+    try {
+      const r = await api.ensureStudioConversation(pid)
+      if (r.conversation_id) {
+        await navigateTo('workspace', { currentProjectId: pid })
+        await selectConversation(r.conversation_id)
+      }
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
   function openWriting() {
     // 小说写作已独立为一级页面（骨架定稿后写作是主战场）
     if (currentProjectId.value) {
@@ -1251,6 +1264,7 @@ export const useAppStore = defineStore('app', () => {
     lastProjectMode,
     openProject,
     toggleSidebar,
+    openStudio,
     openWriting,
     stopWritingChapter,
     writeNextChapter,

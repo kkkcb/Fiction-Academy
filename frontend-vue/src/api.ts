@@ -815,3 +815,7 @@ export function getVolumeOutline(projectId: ID): Promise<VolumeOutline> {
 export function generateVolumeOutline(projectId: ID): Promise<{ volumes: VolumeEntry[]; total_chapters?: number }> {
   return request('POST', `/projects/${projectId}/volume-outline/generate`)
 }
+
+export function ensureStudioConversation(projectId: ID): Promise<{ conversation_id: ID }> {
+  return request('POST', `/projects/${projectId}/studio/ensure`)
+}
