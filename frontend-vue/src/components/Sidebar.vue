@@ -120,7 +120,7 @@ function onSelectAssistant(e: Event) {
         <BrainCircuit :size="16" :stroke-width="1.75" />
       </button>
       <div class="rail-sep"></div>
-      <button class="rail-btn" data-tip="自由对话（展开侧栏查看）" aria-label="展开侧栏查看对话" @click="store.toggleSidebar()">
+      <button class="rail-btn" data-tip="创作对话" aria-label="创作对话" @click="store.openStudio(currentProjectId!)">
         <MessageSquareText :size="16" :stroke-width="1.75" />
       </button>
       <button class="rail-btn rail-expand" data-tip="展开侧栏（Ctrl+\）" aria-label="展开侧栏" @click="store.toggleSidebar()">
@@ -172,9 +172,8 @@ function onSelectAssistant(e: Event) {
       </button>
     </div>
 
-    <div class="sidebar-divider"></div>
-
-    <div class="conv-section">
+    <!-- 自由对话已合并入创作对话 -->
+    <div class="conv-section" style="display:none">
       <div class="conv-header section-head" @click.self="sectionCollapsed.convs = !sectionCollapsed.convs">
         <span class="section-head-inner" @click="sectionCollapsed.convs = !sectionCollapsed.convs">
           <ChevronDown :size="12" :stroke-width="1.75" class="section-arrow" :class="{ folded: sectionCollapsed.convs }" />
