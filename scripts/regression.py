@@ -134,6 +134,15 @@ def _run():
         check("删除素材", c.delete(f"{BASE}/api/materials/{mat_id}").status_code == 200)
     check("非法热榜源被拒（400）", c.get(f"{BASE}/api/hot?source=bad").status_code == 400)
 
+    print("\n== 创作对话分拣 ==")
+    check("无 studio 对话时分拣 404",
+          c.post(f"{BASE}/api/projects/{pid}/studio/distill").status_code == 404)
+    sid = c.post(f"{BASE}/api/projects/{pid}/studio/ensure").json().get("conversation_id")
+    check("studio 对话创建/获取", bool(sid))
+    if sid:
+        check("空对话分拣被拒（400）",
+              c.post(f"{BASE}/api/projects/{pid}/studio/distill").status_code == 400)
+
     if with_llm:
         print("\n== LLM 冒烟（真实调用） ==")
         try:

@@ -819,3 +819,25 @@ export function generateVolumeOutline(projectId: ID): Promise<{ volumes: VolumeE
 export function ensureStudioConversation(projectId: ID): Promise<{ conversation_id: ID }> {
   return request('POST', `/projects/${projectId}/studio/ensure`)
 }
+
+export interface StudioBuildResult {
+  ok: boolean
+  generated: { point: string; label: string; chars: number }[]
+  skipped: string[]
+  errors: string[]
+}
+
+export interface StudioDistillResult {
+  ok: boolean
+  applied: { point: string; label: string; action: string; note: string; chars: number }[]
+  leftover: string
+  message: string
+}
+
+export function studioBuild(projectId: ID): Promise<StudioBuildResult> {
+  return request('POST', `/projects/${projectId}/studio/build`)
+}
+
+export function studioDistill(projectId: ID): Promise<StudioDistillResult> {
+  return request('POST', `/projects/${projectId}/studio/distill`)
+}

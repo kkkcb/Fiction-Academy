@@ -40,6 +40,8 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
+  { cmd: '/distill', icon: 'bolt', title: '总结分拣', desc: '总结新对话，自动归类到对应设定点位（增量，只处理新内容）', pointOnly: false },
+  { cmd: '/build', icon: 'bolt', title: '一键抽骨架', desc: '从整段对话一次性生成缺失的五个骨架点位', pointOnly: false },
   { cmd: '/consult', icon: 'target', title: '专家会诊', desc: '召集五位创作专家圆桌讨论，主线策划统率全局后给出裁决', pointOnly: true },
   { cmd: '/gen', icon: 'bolt', title: '快速生成', desc: '根据一句话想法，AI 直接生成完整的点位设定', pointOnly: true },
   { cmd: '/goal', icon: 'bolt', title: '目标模式', desc: '给出创作目标，AI 自主拆解任务、逐步执行、反向确认', pointOnly: false },

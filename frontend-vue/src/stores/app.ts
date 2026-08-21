@@ -539,6 +539,38 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  /** /distill 总结分拣：新对话自动归类到对应点位 */
+  async function studioDistill(pid: ID) {
+    try {
+      const r = await api.studioDistill(pid)
+      if (currentConversationId.value) await fetchMessages(currentConversationId.value)
+      await fetchWorkspaceItems(pid)
+      if (r.applied?.length) {
+        notifySuccess('已分拣：' + r.applied.map(a => a.label).join('、'))
+      } else {
+        notifySuccess('本轮没有需要沉淀的新设定')
+      }
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
+  /** /build 一键抽骨架：从对话生成缺失的五个点位 */
+  async function studioBuild(pid: ID) {
+    try {
+      const r = await api.studioBuild(pid)
+      if (currentConversationId.value) await fetchMessages(currentConversationId.value)
+      await fetchWorkspaceItems(pid)
+      if (r.generated?.length) {
+        notifySuccess('骨架生成：' + r.generated.map(g => g.label).join('、'))
+      } else {
+        notifySuccess('没有需要生成的点位（都已定稿）')
+      }
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
   function openWriting() {
     // 小说写作已独立为一级页面（骨架定稿后写作是主战场）
     if (currentProjectId.value) {
@@ -1267,6 +1299,8 @@ export const useAppStore = defineStore('app', () => {
     openProject,
     toggleSidebar,
     openStudio,
+    studioDistill,
+    studioBuild,
     openWriting,
     stopWritingChapter,
     writeNextChapter,

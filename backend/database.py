@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     point TEXT,
+    distilled_rowid INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -328,6 +329,8 @@ CREATE TABLE IF NOT EXISTS materials (
     UNIQUE(title, source)
 );
 """),
+    (14, "add_conversations_distilled_rowid",
+     "ALTER TABLE conversations ADD COLUMN distilled_rowid INTEGER NOT NULL DEFAULT 0"),
 ]
 
 _db: aiosqlite.Connection | None = None
@@ -383,6 +386,9 @@ async def _run_migrations(db, fresh_install: bool):
             await _record_version(db, version)
             continue
         if version == 7 and await _has_column(db, "conversations", "point"):
+            await _record_version(db, version)
+            continue
+        if version == 14 and await _has_column(db, "conversations", "distilled_rowid"):
             await _record_version(db, version)
             continue
         if version == 8 and await _has_column(db, "projects", "rules_text"):

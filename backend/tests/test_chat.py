@@ -124,3 +124,77 @@ async def test_delete_message(client, project_id):
     # 删除不存在的消息 → 404
     resp404 = await client.delete(f"/api/messages/{target['id']}")
     assert resp404.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_studio_distill_classifies_and_increments(client, project_id, llm_calls, monkeypatch):
+    """/studio/distill：新增对话自动归类到点位；水位线保证增量。"""
+    ensure = await client.post(f"/api/projects/{project_id}/studio/ensure")
+    cid = ensure.json()["conversation_id"]
+
+    # 两轮对话（LLM 打桩）
+    await _stream_chat(client, cid, content="主角的师父是个说书人，教过他一句话：话不能说满")
+    await _stream_chat(client, cid, content="世界里灵气复苏只有三十年，老修士都是残废")
+
+    # 分拣 LLM 打桩：归类到 人物 + 世界观
+    async def fake_json(messages, system_prompt=None, temperature=0.3, **kw):
+        return {
+            "updates": [
+                {"point": "character_setting", "changed": True, "note": "新增师父说书人设定",
+                 "content": "师父是个说书人，教过主角：话不能说满。行走江湖靠一张嘴。"},
+                {"point": "world_setting", "changed": True, "note": "灵气复苏三十年",
+                 "content": "灵气复苏仅三十年，老一辈修士修为尽废，被称作残废。"},
+                {"point": "story_core", "changed": False, "content": "x" * 30},
+            ],
+            "leftover": "用户随口提了个书名备选",
+        }
+
+    import backend.agents.base as base_module
+    monkeypatch.setattr(base_module, "chat_json", fake_json)
+
+    resp = await client.post(f"/api/projects/{project_id}/studio/distill")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    applied_points = {a["point"] for a in data["applied"]}
+    assert applied_points == {"character_setting", "world_setting"}  # changed=False 的被跳过
+    assert data["leftover"]
+
+    # 工作台生成两条 draft
+    items = (await client.get(f"/api/projects/{project_id}/workspace")).json()
+    by_type = {i["item_type"]: i for i in items if i["item_type"] in ("character_setting", "world_setting")}
+    assert len(by_type) == 2
+    assert all(i["status"] == "draft" for i in by_type.values())
+    assert "说书人" in by_type["character_setting"]["content"]
+
+    # 汇报消息写入对话
+    msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()
+    assert any("已把本轮讨论分拣进设定" in m["content"] for m in msgs)
+
+    # 没有新对话时再分拣 → 400（增量水位生效）
+    resp2 = await client.post(f"/api/projects/{project_id}/studio/distill")
+    assert resp2.status_code == 400
+
+    # 再聊一轮后可再次分拣；已有点位走 merge 且保留 status
+    await _stream_chat(client, cid, content="师父其实姓柳，早年在皇城说书")
+
+    async def fake_json2(messages, system_prompt=None, temperature=0.3, **kw):
+        return {"updates": [
+            {"point": "character_setting", "changed": True, "note": "补全师父身份",
+             "content": "师父柳姓，皇城说书人出身，教主角：话不能说满。"},
+        ], "leftover": ""}
+
+    monkeypatch.setattr(base_module, "chat_json", fake_json2)
+    resp3 = await client.post(f"/api/projects/{project_id}/studio/distill")
+    assert resp3.status_code == 200
+    assert resp3.json()["applied"][0]["action"] == "merged"
+    items2 = (await client.get(f"/api/projects/{project_id}/workspace")).json()
+    cs = [i for i in items2 if i["item_type"] == "character_setting"]
+    assert len(cs) == 1  # merge 不新增条目
+    assert "柳" in cs[0]["content"]
+    assert cs[0]["status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_studio_distill_requires_conversation(client, project_id):
+    resp = await client.post(f"/api/projects/{project_id}/studio/distill")
+    assert resp.status_code == 404

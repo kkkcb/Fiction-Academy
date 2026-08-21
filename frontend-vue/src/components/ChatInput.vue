@@ -114,6 +114,15 @@ function doSend() {
     if (isStreaming.value) return
     store.startGoal(currentProjectId.value, missionMatch[1].trim())
     handled = true
+  } else if (content === '/distill' || content === '/build') {
+    if (!currentProjectId.value || !currentConversationId.value) return
+    if (isStreaming.value) return
+    if (content === '/distill') {
+      store.studioDistill(currentProjectId.value)
+    } else {
+      store.studioBuild(currentProjectId.value)
+    }
+    handled = true
   } else if (currentConversationId.value && !isStreaming.value) {
     store.sendMessage(currentConversationId.value, content)
     handled = true

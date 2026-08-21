@@ -19,11 +19,12 @@ watch(goalState, (g) => {
 
 const archivedPoints = computed(() =>
   POINT_NAV.map(nav => {
-    const item = workspaceItems.value.find(
-      w => w.item_type === nav.key && (w.status === 'finalized' || w.status === 'locked')
-    )
+    const items = workspaceItems.value.filter(w => w.item_type === nav.key)
+    if (!items.length) return null
+    // 定稿/锁定优先展示；没有就展示草稿（/distill 分拣结果先以草稿呈现，可一键「通过」定稿）
+    const item = items.find(w => w.status === 'finalized' || w.status === 'locked') || items[0]
     return { nav, item }
-  }).filter((x): x is { nav: PointNavEntry; item: WorkspaceItem } => !!x.item)
+  }).filter((x): x is { nav: PointNavEntry; item: WorkspaceItem } => !!x)
 )
 
 const otherItems = computed(() =>
@@ -255,7 +256,7 @@ const lintScore = computed(() => {
         <div v-else-if="!lintLoading" class="lint-hint">扫描工作台和知识图谱，自动检测矛盾、冲突和缺漏</div>
       </div>
 
-      <div v-if="archivedPoints.length >= POINT_NAV.length" class="write-cta-card">
+      <div v-if="archivedPoints.filter(x => x.item.status !== 'draft').length >= POINT_NAV.length" class="write-cta-card">
         <div class="write-cta-text">
           <div class="write-cta-title"><Sparkles :size="13" :stroke-width="1.75" style="vertical-align:-2px" /> 骨架已就绪</div>
           <div class="write-cta-sub">五个点位全部定稿，可以开始正文创作了</div>

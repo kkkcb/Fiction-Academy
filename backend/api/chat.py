@@ -137,6 +137,130 @@ async def ensure_studio_conversation(project_id: str):
     return {"conversation_id": cid}
 
 
+@router.post("/projects/{project_id}/studio/distill")
+async def studio_distill(project_id: str):
+    """总结创作对话的新增内容，自动分拣归入对应点位（增量：只处理上次分拣后的新消息）。"""
+    import uuid as _uuid
+    from backend.agents.base import chat_json
+    from backend.agents.guide import POINT_LABELS
+    from backend.services import repo as _repo
+
+    db = await get_db()
+    conv = await fetch_one(
+        db,
+        "SELECT id, distilled_rowid FROM conversations WHERE project_id = ? AND point = '__studio__'",
+        (project_id,),
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="没有创作对话，请先和作者聊聊你的故事")
+
+    watermark = conv["distilled_rowid"] or 0
+    msgs = await fetch_all(
+        db,
+        "SELECT rowid, role, content FROM messages WHERE conversation_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT 60",
+        (conv["id"], watermark),
+    )
+    if len(msgs) < 2:
+        raise HTTPException(status_code=400, detail="没有新的对话内容需要分拣，多聊几句再来")
+
+    new_text = "\n".join(
+        ("用户：" if m["role"] == "user" else "作者：") + (m["content"] or "")[:600] for m in msgs
+    )
+
+    # 现有点位内容（定稿优先），作为合并基底
+    distill_points = ("story_core", "world_setting", "character_setting", "outline_reverse", "outline", "foreshadow")
+    rows = await fetch_all(
+        db,
+        "SELECT id, item_type, status, content FROM workspace_items WHERE project_id = ? AND item_type IN ("
+        + ",".join("?" * len(distill_points)) + ") "
+        "ORDER BY CASE status WHEN 'finalized' THEN 0 WHEN 'locked' THEN 0 ELSE 1 END, sort_order",
+        (project_id, *distill_points),
+    )
+    existing = {r["item_type"]: r for r in rows}
+    if rows:
+        background = "\n\n".join(
+            "【" + POINT_LABELS.get(r["item_type"], r["item_type"]) + "】\n" + (r["content"] or "")[:800]
+            for r in rows
+        )
+    else:
+        background = "（全部为空，首次沉淀）"
+
+    catalog = "\n".join("- " + pt + " " + POINT_LABELS.get(pt, pt) for pt in distill_points)
+    prompt = (
+        "你是设定分拣编辑。作者和用户刚聊完一轮，请把新讨论自动归入对应的设定点位。\n\n"
+        "## 点位清单（point 只能取以下值）\n" + catalog + "\n\n"
+        "## 现有各点位内容（合并基底）\n" + background + "\n\n"
+        "## 本轮新对话\n" + new_text[:9000] + "\n\n"
+        "## 分拣规则\n"
+        "1. 找出新对话里值得沉淀的信息：人物设定、世界观/力量体系、情节走向、伏笔、大纲调整、故事核修正\n"
+        "2. 对每个有新信息的点位输出【合并后的完整内容】：现有内容 + 新信息有机融合成一个连贯版本，不是简单拼接；没有新信息的点位不要输出\n"
+        "3. 寒暄、重复、纯讨论过程不沉淀\n"
+        "4. leftover 放无法归类但以后可能有用的一句话备忘，没有就空字符串\n\n"
+        '输出 JSON：{"updates": [{"point": "world_setting", "note": "本次融合了什么", '
+        '"content": "该点位合并后的完整内容"}], "leftover": ""}'
+    )
+    result = await chat_json(
+        messages=[{"role": "user", "content": prompt}],
+        system_prompt="你是严谨的设定分拣编辑，只依据对话事实分拣，不自行发明设定。",
+        temperature=0.3,
+    )
+
+    applied = []
+    updates = result.get("updates") or []
+    if not isinstance(updates, list):
+        updates = []
+    for u in updates:
+        if not isinstance(u, dict):
+            continue
+        pt = u.get("point")
+        if pt not in distill_points or not u.get("changed", True):
+            continue
+        content = (u.get("content") or "").strip()
+        if len(content) < 20:
+            continue
+        note = (u.get("note") or "").strip()
+        if pt in existing:
+            await db.execute(
+                "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+                (content, existing[pt]["id"]),
+            )
+            action = "merged"
+        else:
+            item_id = str(_uuid.uuid4())
+            sort_order = await _repo.next_sort_order(db, project_id)
+            await db.execute(
+                "INSERT INTO workspace_items (id, project_id, item_type, status, title, content, sort_order) "
+                "VALUES (?, ?, ?, 'draft', ?, ?, ?)",
+                (item_id, project_id, pt, POINT_LABELS.get(pt, pt), content, sort_order),
+            )
+            action = "created"
+        applied.append({"point": pt, "label": POINT_LABELS.get(pt, pt), "action": action,
+                        "note": note, "chars": len(content)})
+    leftover = (result.get("leftover") or "").strip()
+
+    if applied:
+        lines = ["✅【" + a["label"] + "】" + (a["note"] or (str(a["chars"]) + " 字")) for a in applied]
+        text = "已把本轮讨论分拣进设定：\n\n" + "\n".join(lines)
+    else:
+        text = "本轮对话没有需要沉淀的新设定（寒暄和重复内容已忽略）。"
+    if leftover:
+        text += "\n\n📝 备忘（暂无归属）：" + leftover[:200]
+    await _repo.save_message(db, conv["id"], "assistant", text)
+
+    # 水位推进到汇报消息之后，本轮内容和汇报本身都不会进下一批
+    cursor = await db.execute(
+        "SELECT MAX(rowid) AS m FROM messages WHERE conversation_id = ?", (conv["id"],)
+    )
+    max_row = await cursor.fetchone()
+    await cursor.close()
+    await db.execute(
+        "UPDATE conversations SET distilled_rowid = ?, updated_at = datetime('now') WHERE id = ?",
+        (max_row["m"] or watermark, conv["id"]),
+    )
+    await db.commit()
+    return {"ok": True, "applied": applied, "leftover": leftover, "message": text}
+
+
 @router.post("/projects/{project_id}/studio/build")
 async def studio_build_skeleton(project_id: str):
     """从创作对话历史一键生成全部骨架点位（故事核→世界观→人物→倒推→正向）。"""
@@ -351,7 +475,7 @@ async def _chat_stream_generator(
             + "- **聊天中自然覆盖**：随着对话深入，故事的核、世界观、人物、情节线会自然浮现，不需要按顺序\n"
             + "- **给选项不给问卷**：聊到关键设定时给2-3个截然不同的方向让用户挑，而不是空问'你想要什么'\n"
             + "- **用户说'随便'时直接推你最推荐的方向**，不追问\n"
-            + "- **觉得故事差不多了时**，主动说'我觉得骨架差不多了，要不要我帮你生成结构化的骨架？'——用户同意后提示他输入 /build 或点按钮\n"
+            + "- **觉得故事差不多了时**，主动说'我觉得骨架差不多了，要不要我帮你生成结构化的骨架？'——用户同意后提示他输入 /build；平时聊出了不少新设定，也可以提醒他输入 /distill 把新内容自动归档到对应设定\n"
             + "\n当前骨架状态见下方上下文（已定稿的点位无需重复讨论）。\n"
         )
     elif point in POINT_PERSONAS:
