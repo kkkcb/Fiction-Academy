@@ -21,6 +21,8 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/fiction-academy}"
 SERVICE="fiction-academy"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+# 对外端口（nginx 监听）；80 被其他服务占用时可用 PUBLIC_PORT=8080 bash deploy-server.sh
+PUBLIC_PORT="${PUBLIC_PORT:-80}"
 
 say() { echo -e "\n\033[1;36m==> $1\033[0m"; }
 die() { echo -e "\n\033[1;31m[失败] $1\033[0m" >&2; exit 1; }
@@ -104,11 +106,13 @@ done
 echo "后端已启动（127.0.0.1:8000）"
 
 # ---------------------------------------------------------------- 6. Nginx + Basic Auth
-say "配置 Nginx（80 端口 + Basic Auth）..."
+say "配置 Nginx（${PUBLIC_PORT} 端口 + Basic Auth）..."
 AUTH_USER="admin"
 HTPASSWD="/etc/nginx/.htpasswd-fiction"
 if [ ! -f "$HTPASSWD" ]; then
-    AUTH_PASS="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12)"
+    # 注意：不能用 tr < /dev/urandom | head 的写法——pipefail 下 head 提前退出
+    # 会令 tr 因 SIGPIPE 以 141 退出，set -e 直接终止脚本
+    AUTH_PASS="$(openssl rand -hex 6 2>/dev/null || head -c9 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     htpasswd -bc "$HTPASSWD" "$AUTH_USER" "$AUTH_PASS" >/dev/null 2>&1
     echo "$AUTH_PASS" > /root/fiction-academy-password.txt
     chmod 600 /root/fiction-academy-password.txt
@@ -116,16 +120,16 @@ else
     AUTH_PASS="(沿用之前生成的密码，见 /root/fiction-academy-password.txt)"
 fi
 
-cat > "/etc/nginx/sites-available/${SERVICE}" <<'EOF'
+cat > "/etc/nginx/sites-available/${SERVICE}" <<EOF
 server {
-    listen 80 default_server;
+    listen ${PUBLIC_PORT} default_server;
     server_name _;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header Connection "";
 
         # SSE 流式输出必需
@@ -140,8 +144,9 @@ server {
 EOF
 rm -f /etc/nginx/sites-enabled/default
 ln -sf "/etc/nginx/sites-available/${SERVICE}" "/etc/nginx/sites-enabled/${SERVICE}"
+systemctl enable nginx >/dev/null 2>&1 || true
 nginx -t 2>/dev/null || { nginx -t; die "Nginx 配置有误。"; }
-systemctl reload nginx
+systemctl reload nginx 2>/dev/null || systemctl restart nginx
 
 # ---------------------------------------------------------------- 7. 完成
 PUB_IP="$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || curl -sf --max-time 5 http://ip.sb 2>/dev/null || echo '服务器公网IP')"
@@ -149,7 +154,9 @@ echo
 echo "============================================================"
 echo -e "\033[1;32m  ✅ 部署完成！\033[0m"
 echo "------------------------------------------------------------"
-echo "  访问地址： http://${PUB_IP}/"
+PORT_SUFFIX=""
+[ "$PUBLIC_PORT" = "80" ] || PORT_SUFFIX=":${PUBLIC_PORT}"
+echo "  访问地址： http://${PUB_IP}${PORT_SUFFIX}/"
 echo "  用户名：   ${AUTH_USER}"
 echo "  密码：     ${AUTH_PASS}"
 echo "  （密码也保存在服务器 /root/fiction-academy-password.txt）"

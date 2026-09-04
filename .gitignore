@@ -50,3 +50,7 @@ build/
 logs_*.b64
 logs_*.md
 compare_*.txt
+
+# Deploy version stamp (written by scripts/deploy-vps.sh)
+backend/DEPLOY_VERSION
+.deploy-*.tar.gz
