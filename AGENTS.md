@@ -4,7 +4,7 @@
 
 1. **附上本地访问地址**：回复末尾必须包含本地服务地址和健康状态，方便用户直接查看：
    - 本地：http://localhost:8000 （后端 + 前端同端口）
-   - 服务器版：http://YOUR_VPS_IP:8080/ （nginx 反代 + Basic Auth；更新：`bash scripts/deploy-vps.sh`，密码 VPS_PW 传入；Basic Auth 密码在服务器 /root/fiction-academy-password.txt）
+   - 服务器版：http://YOUR_VPS_IP:8080/ （nginx 仅密码门，无用户名，输对密码发 90 天 cookie；更新代码：`bash scripts/deploy-vps.sh`；改密码/改 nginx：SSH 上服务器 `GATE_PASSWORD=新密码 bash scripts/deploy-server.sh`，密码存在 /root/fiction-academy-password.txt）
    - 提醒用户刷新方式：Ctrl+F5（旧标签页不会自动更新）
 2. **三层回归验证全过才算完成**（见 README「回归测试」）：
    - `python -m pytest backend/tests -q`
