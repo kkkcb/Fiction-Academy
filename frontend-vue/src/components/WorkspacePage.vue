@@ -9,11 +9,10 @@ import OverviewPanel from './OverviewPanel.vue'
 import WritingPanel from './WritingPanel.vue'
 import MessageList from './MessageList.vue'
 import ChatInput from './ChatInput.vue'
-import OutlineStudio from './OutlineStudio.vue'
 import AuthorPicker from './AuthorPicker.vue'
 import IconMoon from './icons/IconMoon.vue'
 import IconSun from './icons/IconSun.vue'
-import { Archive, PanelRight, PenLine, Feather, Mic, Trash2 } from 'lucide-vue-next'
+import { Archive, PanelRight, PenLine, Feather, Trash2 } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -185,7 +184,7 @@ async function handleArchive() {
     ></div>
 
     <div class="workspace-center chat-area">
-      <!-- 未选作者：整个工作区（对话/写作/大纲语音）统一提醒补选 -->
+      <!-- 未选作者：整个工作区统一提醒补选 -->
       <div v-if="needsAuthor" class="author-gate">
         <div class="author-gate-card">
           <div class="author-gate-title">
@@ -207,7 +206,6 @@ async function handleArchive() {
       </div>
 
       <WritingPanel v-else-if="centerView === 'writing'" class="writing-host" />
-      <OutlineStudio v-else-if="centerView === 'outline'" class="writing-host" />
 
       <template v-else>
       <div class="chat-header">
@@ -247,14 +245,6 @@ async function handleArchive() {
           @click="clearCurrentConversation"
         >
           <Trash2 :size="13" :stroke-width="1.75" /> {{ clearingConv ? '清空中…' : '清空对话' }}
-        </button>
-        <button
-          class="btn btn-sm mode-pill"
-          title="大纲语音对话：对着麦克风聊，把大纲定下来"
-          aria-label="打开大纲语音对话"
-          @click="centerView = 'outline'"
-        >
-          <Mic :size="13" :stroke-width="1.75" /> 大纲语音对话
         </button>
         <button
           class="btn btn-sm mode-pill"

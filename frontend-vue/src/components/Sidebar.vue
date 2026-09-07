@@ -14,12 +14,9 @@ const {
   conversations,
   currentConversationId,
   points,
-  assistants,
-  currentAssistantId,
   centerView,
   chapters,
   sidebarCollapsed,
-  outlineConvId,
 } = storeToRefs(store)
 
 const currentProject = computed(() =>
@@ -38,17 +35,14 @@ const historyConversations = computed(() =>
 
 function convLabel(c: Conversation): string {
   if (c.point === '__studio__') return '创作对话'
-  if (c.point === '__outline__') return '🎙 大纲语音'
+  if (c.point === '__outline__') return '大纲访谈'
   if (c.point) return POINT_NAV.find(p => p.key === c.point)?.label || c.title || '对话'
   return c.title || '自由对话'
 }
 
 function openConv(c: Conversation) {
-  if (c.point === '__outline__') {
-    store.openOutlineConv(c.id)
-  } else {
-    store.selectConversation(c.id)
-  }
+  // 大纲访谈会话直接在创作对话里打开（访谈主持人人格由会话自带）
+  store.selectConversation(c.id)
 }
 
 function pointStatus(key: string) {
@@ -59,7 +53,6 @@ function pointStatus(key: string) {
 async function handleDeleteConv(id: ID) {
   if (confirm('确定删除这个对话？删除后不可恢复。')) {
     await store.deleteConversation(id)
-    if (outlineConvId.value === id) store.openOutlineConv('') // 触发 OutlineStudio 重建新会话
   }
 }
 
@@ -160,7 +153,7 @@ function goBack() {
         v-show="!sectionCollapsed.convs"
         :key="c.id"
         class="conv-item"
-        :class="{ active: currentConversationId === c.id || (c.point === '__outline__' && centerView === 'outline' && outlineConvId === c.id) }"
+        :class="{ active: currentConversationId === c.id }"
         @click="openConv(c)"
       >
         <div class="conv-main">
