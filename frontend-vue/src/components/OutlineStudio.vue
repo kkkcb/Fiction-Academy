@@ -383,4 +383,25 @@ async function distill() {
   user-select: none;
 }
 .os-unsupported { color: #d97706; }
+
+@media (max-width: 768px) {
+  .os-header { flex-wrap: wrap; padding: 8px 10px; }
+  .os-title-wrap { flex: 1 1 100%; }
+  .os-sub { display: none; }
+  .os-header > .btn { flex: 1 1 100%; justify-content: center; }
+  .os-checklist {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 6px 10px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .os-chip { flex: 0 0 auto; }
+  .os-messages { padding: 12px 10px 20px; }
+  .os-bubble { max-width: 92%; }
+  .os-inputbar { padding: 8px 10px 10px; }
+  .os-row { gap: 6px; }
+  .os-mic, .os-send { width: 46px; height: 46px; }
+  .os-textarea { font-size: 16px; padding: 10px 10px; }
+  .os-empty-sub br { display: none; }
+}
 </style>

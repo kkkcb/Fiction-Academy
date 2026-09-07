@@ -128,6 +128,8 @@ function stopResize() {
 onMounted(() => {
   isDark.value = document.documentElement.dataset.theme === 'dark'
   if (window.innerWidth < 1180) showRightPanel.value = false
+  // 手机端：侧栏收成图标导航轨，点位/项目切换都从轨上走
+  if (window.innerWidth < 768 && !sidebarCollapsed.value) store.toggleSidebar()
   if (currentProjectId.value && points.value.length === 0) {
     store.navigateTo('workspace', { currentProjectId: currentProjectId.value })
   }

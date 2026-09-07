@@ -2052,15 +2052,18 @@ body {
 }
 
 @media (max-width: 768px) {
+  /* 动态视口高度：避免手机浏览器地址栏导致的 100vh 溢出 */
+  body, #app, .workspace-layout, .app-workspace, .sidebar-left, .sidebar-right, .rail-content, .rail-content.projects-page {
+    height: 100dvh;
+  }
   .workspace-layout,
   .workspace-grid {
     flex-direction: column;
     grid-template-columns: 1fr;
   }
-  .sidebar-left,
-  .sidebar-right {
-    display: none;
-  }
+  /* 左栏不隐藏：由 JS 收成 56px 图标导航轨（否则手机上无法切点位/项目） */
+  .sidebar-right { display: none; }
+  .resize-handle, .resize-handle-left { display: none; }
   .projects-grid,
   .skeleton-point-list {
     grid-template-columns: 1fr;
@@ -2071,6 +2074,53 @@ body {
   .projects-title { font-size: 32px; }
   .chat-messages { padding: var(--space-4); }
   .chat-input-area { padding: var(--space-3); }
+
+  /* 写作页：正文在上，章节列表变成底部横滑条 */
+  .writing-body { flex-direction: column-reverse; }
+  .chapter-list {
+    width: 100%;
+    height: 118px;
+    border-right: none;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .ch-scroll {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 8px;
+  }
+  .ch-item {
+    flex: 0 0 auto;
+    width: 148px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+  .ch-words { display: none; }
+  .ch-empty { overflow-y: auto; }
+  .reader-content { padding: 14px 14px 32px; }
+
+  /* iOS 聚焦不自动放大：输入类控件至少 16px */
+  .chat-input, .chat-input-shell textarea,
+  .os-textarea, .chapter-edit-area,
+  .modal-input, .modal-card input, .modal-card textarea,
+  .batch-goal, .chat-input textarea {
+    font-size: 16px !important;
+  }
+
+  /* 通用触控目标加大 */
+  .btn { min-height: 36px; }
+  .btn-sm { min-height: 32px; }
+
+  /* 头部防溢出：按钮换行、副标题让位 */
+  .writing-header { flex-wrap: wrap; }
+  .wh-actions { flex-wrap: wrap; }
+  .chat-header-subtitle { display: none; }
+  .chat-header-author { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mode-pill { padding: 4px 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
