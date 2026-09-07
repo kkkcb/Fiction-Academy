@@ -42,7 +42,7 @@ def main():
         import paramiko
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(VPS_IP, username=VPS_USER, password=pw, timeout=20)
+        ssh.connect(VPS_IP, username=VPS_USER, password=pw, timeout=20, allow_agent=False, look_for_keys=False)
         # 整目录打包（含 -wal/-shm），比单拷 db 文件更稳
         _, out, _ = ssh.exec_command(
             f"cd {APP_DIR} && tar czf /tmp/fa-backup.tar.gz data 2>/dev/null", timeout=120)
@@ -56,7 +56,10 @@ def main():
         # 解包（python tarfile：Windows 自带 tar.exe 对中文路径会 exit 1）
         import tarfile
         with tarfile.open(os.path.join(dest, "fa-backup.tar.gz")) as t:
-            t.extractall(dest, filter="data")
+            try:
+                t.extractall(dest, filter="data")
+            except TypeError:  # Python <3.12 无 filter 参数（安全过滤仅 3.12+ 提供）
+                t.extractall(dest)
         os.remove(os.path.join(dest, "fa-backup.tar.gz"))
         # 只保留最近 30 份归档
         archives = sorted(d for d in os.listdir(BACKUP_DIR) if d.startswith("vps-"))

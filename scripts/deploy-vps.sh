@@ -46,7 +46,7 @@ pw = os.environ.get("VPS_PW") or input("VPS 密码: ")
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect(ip, username=user, password=pw, timeout=15)
+ssh.connect(ip, username=user, password=pw, timeout=15, allow_agent=False, look_for_keys=False)
 sftp = ssh.open_sftp()
 # 上传/解包一律绝对路径：sftp 相对路径落在登录家目录，曾导致解包静默失败
 sftp.put("./.deploy-fa.tar.gz", "/tmp/deploy-fa.tar.gz")
