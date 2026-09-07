@@ -54,3 +54,7 @@ compare_*.txt
 # Deploy version stamp (written by scripts/deploy-vps.sh)
 backend/DEPLOY_VERSION
 .deploy-*.tar.gz
+
+# VPS backup (scripts/backup_vps.py)
+.vps-pass
+backups/

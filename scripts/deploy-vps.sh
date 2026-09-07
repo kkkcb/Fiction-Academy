@@ -14,6 +14,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+echo "→ 部署前先备份线上数据（防数据库覆盖/误操作事故）"
+python scripts/backup_vps.py || echo "  （备份失败不阻塞部署，查看 backups/backup.log）"
+
 VPS_IP="${VPS_IP:-YOUR_VPS_IP}"
 VPS_USER="${VPS_USER:-root}"
 APP_DIR="${APP_DIR:-/opt/fiction-academy}"
