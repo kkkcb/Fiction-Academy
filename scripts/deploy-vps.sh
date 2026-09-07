@@ -30,10 +30,17 @@ tar czf ./.deploy-fa.tar.gz --exclude='__pycache__' --exclude='backend.log' \
   backend characters frontend-vue/dist scripts data/fiction_academy.db
 
 echo "→ 上传到 $VPS_IP 并部署（版本 $GIT_SHA）"
+# MSYS_NO_PATHCONV：Git Bash 会把「VAR=/opt/...」前缀env 误转成 C:/Program Files/Git/opt/...
+# （曾导致远端 tar -C 收到 Windows 路径而失败），这里禁掉转换
+export MSYS_NO_PATHCONV=1
 VPS_IP="$VPS_IP" VPS_USER="$VPS_USER" APP_DIR="$APP_DIR" LOCAL_SHA="$GIT_SHA" python - <<'PYEOF'
 import os, paramiko, sys
 
-ip, user, app_dir = os.environ["VPS_IP"], os.environ["VPS_USER"], os.environ["APP_DIR"]
+ip, user = os.environ["VPS_IP"], os.environ["VPS_USER"]
+# 兜底：万一 APP_DIR 再被壳层改坏，退回服务器约定路径
+app_dir = os.environ.get("APP_DIR") or "/opt/fiction-academy"
+if not app_dir.startswith("/"):
+    app_dir = "/opt/fiction-academy"
 local_sha = os.environ["LOCAL_SHA"]
 pw = os.environ.get("VPS_PW") or input("VPS 密码: ")
 
@@ -72,4 +79,4 @@ ssh.close()
 sys.exit(1 if failed else 0)
 PYEOF
 
-echo "→ 线上地址: http://$VPS_IP:8080/（Basic Auth admin，密码见服务器 /root/fiction-academy-password.txt）"
+echo "→ 线上地址: http://$VPS_IP:8080/（密码门，访问密码见服务器 /root/fiction-academy-password.txt）"
