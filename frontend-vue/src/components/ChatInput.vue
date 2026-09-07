@@ -11,7 +11,7 @@ import IconBolt from './icons/IconBolt.vue'
 const emit = defineEmits<{ (e: 'send'): void }>()
 
 const store = useAppStore()
-const { isStreaming, assistants, currentAssistantId, currentPoint, activeMode, currentProjectId, currentConversationId } = storeToRefs(store)
+const { isStreaming, currentPoint, activeMode, currentProjectId, currentConversationId } = storeToRefs(store)
 
 const text = ref<string>('')
 const inputEl = ref<HTMLTextAreaElement | null>(null)
@@ -141,10 +141,6 @@ function doSend() {
 function onBlur() {
   setTimeout(closePopover, 150)
 }
-
-function onSelectAssistant(e: Event) {
-  store.selectAssistant((e.target as HTMLSelectElement).value)
-}
 </script>
 
 <template>
@@ -180,21 +176,10 @@ function onSelectAssistant(e: Event) {
 
         <div class="input-toolbar">
           <div class="toolbar-left">
-            <template v-if="voiceRecording">
-              <span class="voice-status" :title="voiceInterim">
-                <span class="voice-dot"></span>
-                <span class="voice-status-text">正在聆听<template v-if="voiceInterim">：{{ voiceInterim }}</template></span>
-              </span>
-            </template>
-            <select
-              v-else-if="assistants.length > 0"
-              class="assistant-select toolbar-select"
-              :value="currentAssistantId"
-              @change="onSelectAssistant"
-            >
-              <option value="">默认 · 跟随点位</option>
-              <option v-for="a in assistants" :key="a.id" :value="a.id">{{ a.name }}</option>
-            </select>
+            <span v-if="voiceRecording" class="voice-status" :title="voiceInterim">
+              <span class="voice-dot"></span>
+              <span class="voice-status-text">正在聆听<template v-if="voiceInterim">：{{ voiceInterim }}</template></span>
+            </span>
           </div>
 
           <div class="toolbar-right">

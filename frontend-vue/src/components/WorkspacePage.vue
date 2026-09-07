@@ -185,7 +185,28 @@ async function handleArchive() {
     ></div>
 
     <div class="workspace-center chat-area">
-      <WritingPanel v-if="centerView === 'writing'" class="writing-host" />
+      <!-- 未选作者：整个工作区（对话/写作/大纲语音）统一提醒补选 -->
+      <div v-if="needsAuthor" class="author-gate">
+        <div class="author-gate-card">
+          <div class="author-gate-title">
+            <Feather :size="18" :stroke-width="1.75" />
+            请选择一位作者人格
+          </div>
+          <p class="author-gate-desc">
+            这个项目还没选作者——作者决定对话和执笔的文风，不选无法开始创作。看看每位作者擅长什么，选一位最对你胃口的。
+          </p>
+          <AuthorPicker v-model="pickingAuthor" />
+          <div class="author-gate-actions">
+            <button
+              class="btn btn-primary"
+              :disabled="!pickingAuthor || pickSaving"
+              @click="confirmAuthor"
+            >{{ pickSaving ? '保存中…' : '就用这位，开始创作' }}</button>
+          </div>
+        </div>
+      </div>
+
+      <WritingPanel v-else-if="centerView === 'writing'" class="writing-host" />
       <OutlineStudio v-else-if="centerView === 'outline'" class="writing-host" />
 
       <template v-else>
@@ -264,29 +285,9 @@ async function handleArchive() {
         </button>
       </div>
 
-      <MessageList v-if="!needsAuthor" />
+      <MessageList />
 
-      <ChatInput v-if="!needsAuthor" />
-
-      <div v-else class="author-gate">
-        <div class="author-gate-card">
-          <div class="author-gate-title">
-            <Feather :size="18" :stroke-width="1.75" />
-            先选一位作者人格
-          </div>
-          <p class="author-gate-desc">
-            作者决定这场创作对话的文风和后续执笔风格——看看每位作者擅长什么，选一位最对你胃口的。
-          </p>
-          <AuthorPicker v-model="pickingAuthor" />
-          <div class="author-gate-actions">
-            <button
-              class="btn btn-primary"
-              :disabled="!pickingAuthor || pickSaving"
-              @click="confirmAuthor"
-            >{{ pickSaving ? '保存中…' : '就用这位，开始聊' }}</button>
-          </div>
-        </div>
-      </div>
+      <ChatInput />
       </template>
     </div>
 
