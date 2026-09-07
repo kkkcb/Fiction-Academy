@@ -843,6 +843,11 @@ export function studioBuild(projectId: ID): Promise<StudioBuildResult> {
   return request('POST', `/projects/${projectId}/studio/build`)
 }
 
+/** 语音转写加标点（只加标点不改字，失败原样返回） */
+export function punctuate(text: string): Promise<{ text: string }> {
+  return request('POST', `/punctuate`, { text })
+}
+
 export function studioDistill(projectId: ID): Promise<StudioDistillResult> {
   return request('POST', `/projects/${projectId}/studio/distill`)
 }

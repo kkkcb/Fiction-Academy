@@ -2,6 +2,7 @@
 import { ref, computed, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
+import * as api from '../api'
 import { useSlashCommands } from '../composables/useSlashCommands'
 import { useVoiceInput, isVoiceInputSupported } from '../composables/useVoiceInput'
 import { Mic, Square, ArrowUp } from 'lucide-vue-next'
@@ -25,12 +26,39 @@ const { popoverOpen, matchedCommands, activeIndex, handleInput, handleKeydown, c
 
 /* ---- 语音输入（浏览器原生，免费） ---- */
 const voiceSupported = isVoiceInputSupported()
+
+// 语音转写自动加标点：停顿 600ms 后把整段送后端补标点（只加标点不改字），
+// 期间用户手动改过输入框就放弃替换，避免覆盖手打内容
+let punctTimer: ReturnType<typeof setTimeout> | null = null
+let punctToken = 0
+let punctuating = ref(false)
+function schedulePunctuate() {
+  if (punctTimer) clearTimeout(punctTimer)
+  punctTimer = setTimeout(async () => {
+    const src = text.value
+    if (!src.trim() || src.length > 2000) return
+    const tk = ++punctToken
+    punctuating.value = true
+    try {
+      const r = await api.punctuate(src)
+      if (tk === punctToken && r.text && r.text !== src && text.value === src) {
+        text.value = r.text
+        nextTick(autoResize)
+      }
+    } catch { /* 标点失败静默：原文照样能发 */ }
+    finally {
+      if (tk === punctToken) punctuating.value = false
+    }
+  }, 600)
+}
+
 const voice = useVoiceInput({
   onFinalText: (chunk) => {
     const prev = text.value
     const glue = prev && !/[\u4e00-\u9fa5，。！？、；：）]$/u.test(prev) ? ' ' : ''
     text.value = prev + glue + chunk
     nextTick(autoResize)
+    schedulePunctuate()
   },
   onError: (msg) => { store.error = msg },
 })

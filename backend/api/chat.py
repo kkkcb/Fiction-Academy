@@ -399,6 +399,41 @@ async def stream_chat(conversation_id: str, body: ChatRequest):
     )
 
 
+class PunctuateBody(BaseModel):
+    text: str = ""
+
+
+@router.post("/punctuate")
+async def punctuate(body: PunctuateBody):
+    """给语音转写加标点：只加标点不改字，失败时原样返回（不阻塞输入）。"""
+    text = (body.text or "").strip()
+    if not text or len(text) > 2000:
+        return {"text": body.text or ""}
+    try:
+        out = ""
+        async for kind, chunk in chat_stream(
+            [{"role": "user", "content": text}],
+            system_prompt=(
+                "给下面这段中文口述转写添加标点符号。规则：只加标点（，。！？；：、""''——……），"
+                "不增加字、不删除字、不修改任何字，不输出任何解释。直接输出加好标点的原文。"
+            ),
+            temperature=0.0,
+            disable_thinking=True,
+        ):
+            if kind == "content":
+                out += chunk
+        out = out.strip().strip('"').strip("'").strip('"').strip('"')
+        if out:
+            return {"text": out}
+    except Exception as e:
+        logger.warning("[punctuate] failed: %s", e)
+    return {"text": body.text or ""}
+
+
+class PunctuateBody(BaseModel):
+    text: str = ""
+
+
 @router.post("/projects/{project_id}/outline-studio/distill")
 async def outline_studio_distill(project_id: str):
     """把大纲语音对话（point='__outline__'）落成倒推大纲+正向大纲草稿（可反复生成覆盖草稿）。"""
@@ -645,6 +680,11 @@ async def _chat_stream_generator(
                 conversation_id, assistant_id or "default", len(messages), regenerate)
 
     full_reply = ""
+    # 开写即建行、边写边落库：刷新/断线后已生成部分不丢
+    _msg_id = await repo.save_message(db, conversation_id, "assistant", "")
+    _saved_len = 0
+    import time as _t
+    _last_save = _t.time()
     try:
         async for kind, chunk in chat_stream(messages, system_prompt=final_system_prompt, model=assistant_model):
             if kind == "reasoning":
@@ -652,24 +692,30 @@ async def _chat_stream_generator(
             else:
                 full_reply += chunk
                 yield json.dumps({"content": chunk}, ensure_ascii=False) + "\n"
+                if len(full_reply) - _saved_len >= 120 or _t.time() - _last_save >= 1.0:
+                    _saved_len = len(full_reply)
+                    _last_save = _t.time()
+                    await db.execute("UPDATE messages SET content = ? WHERE id = ?", (full_reply, _msg_id))
     except LLMError as e:
         logger.error("[stream] LLM error for conversation=%s: %s", conversation_id, e)
         if full_reply:
-            await repo.save_message(db, conversation_id, "assistant", full_reply + f"\n\n[生成中断: {e}]")
+            full_reply += f"\n\n[生成中断: {e}]"
         yield json.dumps({"error": f"生成失败: {e}"}, ensure_ascii=False) + "\n"
         return
     except Exception as e:
         logger.error("[stream] unexpected error for conversation=%s: %s", conversation_id, e, exc_info=True)
         yield json.dumps({"error": f"生成失败: {e}"}, ensure_ascii=False) + "\n"
         return
-
-    if full_reply.strip():
-        async with transaction():
-            await repo.save_message(db, conversation_id, "assistant", full_reply)
-            await db.execute(
-                "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
-                (conversation_id,),
-            )
-            await repo.touch_project(db, project_id)
+    finally:
+        # 完成落最终版；断线/取消（GeneratorExit）时兜底保存已生成部分；空回复删行
+        if full_reply.strip():
+            await db.execute("UPDATE messages SET content = ? WHERE id = ?", (full_reply, _msg_id))
+            await db.commit()
+            async with transaction():
+                await db.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?", (conversation_id,))
+                await repo.touch_project(db, project_id)
+        else:
+            await db.execute("DELETE FROM messages WHERE id = ?", (_msg_id,))
+            await db.commit()
 
     yield json.dumps({"done": True}, ensure_ascii=False) + "\n"
