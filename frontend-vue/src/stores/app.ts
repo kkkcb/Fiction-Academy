@@ -94,7 +94,7 @@ export const useAppStore = defineStore('app', () => {
   const workspaceItems = ref<WorkspaceItem[]>([])
 
   // ===== 小说写作（中央区视图 + 流式写章状态） =====
-  const centerView = ref<'chat' | 'writing'>('chat')
+  const centerView = ref<'chat' | 'writing' | 'outline'>('chat')
   const isWritingChapter = ref(false)
   const writingPhase = ref('')
   const writingContent = ref('')

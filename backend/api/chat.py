@@ -399,6 +399,113 @@ async def stream_chat(conversation_id: str, body: ChatRequest):
     )
 
 
+@router.post("/projects/{project_id}/outline-studio/distill")
+async def outline_studio_distill(project_id: str):
+    """把大纲语音对话（point='__outline__'）落成倒推大纲+正向大纲草稿（可反复生成覆盖草稿）。"""
+    import uuid as _uuid
+    from backend.agents.base import chat_json
+    from backend.api.points import AUTO_GENERATE_SYSTEM_PROMPT
+    from backend.agents.guide import POINT_LABELS
+    from backend.agents.guide_prompts import POINT_CONFIGS
+    from backend.services import repo as _repo
+
+    db = await get_db()
+    conv = await fetch_one(
+        db, "SELECT id FROM conversations WHERE project_id = ? AND point = '__outline__'", (project_id,))
+    if not conv:
+        raise HTTPException(status_code=404, detail="还没有大纲对话，先进「大纲语音对话」聊几句")
+    msgs = await fetch_all(
+        db,
+        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
+        (conv["id"],),
+    )
+    if len(msgs) < 2:
+        raise HTTPException(status_code=400, detail="对话内容太少，多聊几问再生成")
+    conversation_text = "\n".join(
+        ("用户：" if m["role"] == "user" else "主持：") + (m["content"] or "")[:300] for m in msgs[-40:]
+    )
+
+    # 已定稿的不覆盖；已有的草稿会被新版覆盖（访谈反复迭代）
+    existing = await fetch_all(
+        db,
+        """SELECT item_type, id FROM workspace_items WHERE project_id = ?
+           AND item_type IN ('outline_reverse', 'outline') AND status IN ('finalized','locked')""",
+        (project_id,),
+    )
+    done = {r["item_type"]: r["id"] for r in existing}
+
+    bg_rows = await fetch_all(
+        db,
+        """SELECT item_type, content FROM workspace_items WHERE project_id = ?
+           AND item_type IN ('story_core','world_setting','character_setting') AND status IN ('finalized','locked')
+           ORDER BY sort_order""",
+        (project_id,),
+    )
+    background = "\n\n".join(
+        "【" + POINT_LABELS.get(r["item_type"], r["item_type"]) + "】\n" + (r["content"] or "")[:400]
+        for r in bg_rows
+    ) or "（无前序设定）"
+
+    generated, errors = [], []
+    for pt in ("outline_reverse", "outline"):
+        if pt in done:
+            continue
+        label = POINT_LABELS.get(pt, pt)
+        fields_hint = json.dumps(POINT_CONFIGS.get(pt, {}).get("fields", {}), ensure_ascii=False, indent=2)
+        prompt = (
+            "以下是访谈主持人和用户为确定这部小说大纲的对话记录。请从中抽离出【" + label + "】的结构化内容。\n\n"
+            "## 对话记录\n" + conversation_text[:6000] + "\n\n"
+            "## 已确定的设定（必须保持一致）\n" + background + "\n\n"
+            "## 该点位需要的字段\n" + fields_hint + "\n\n"
+            "只依据对话中用户确认过的内容；没覆盖到的部分按对话走向合理补全。输出 JSON：{\"summary\": \"300-600字连贯设定\", \"fields\": {}}"
+        )
+        try:
+            result = await chat_json(
+                messages=[{"role": "user", "content": prompt}],
+                system_prompt=AUTO_GENERATE_SYSTEM_PROMPT,
+                temperature=0.8,
+            )
+            summary = result.get("summary", "")
+            fields = result.get("fields", {}) if isinstance(result.get("fields"), dict) else {}
+            draft = await fetch_one(
+                db,
+                """SELECT id FROM workspace_items WHERE project_id = ? AND item_type = ? AND status = 'draft'""",
+                (project_id, pt),
+            )
+            if draft:
+                await db.execute(
+                    "UPDATE workspace_items SET content = ?, metadata = ?, updated_at = datetime('now') WHERE id = ?",
+                    (summary, json.dumps(fields, ensure_ascii=False), draft["id"]),
+                )
+                item_id = draft["id"]
+            else:
+                item_id = str(_uuid.uuid4())
+                sort_order = await _repo.next_sort_order(db, project_id)
+                await db.execute(
+                    """INSERT INTO workspace_items
+                       (id, project_id, item_type, status, title, content, metadata, sort_order)
+                       VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)""",
+                    (item_id, project_id, pt, label, summary, json.dumps(fields, ensure_ascii=False), sort_order),
+                )
+            await db.commit()
+            generated.append({"point": pt, "label": label, "chars": len(summary)})
+        except Exception as e:
+            logger.error("[outline-distill] %s failed: %s", pt, e)
+            errors.append(f"{label}: {str(e)[:80]}")
+
+    if generated:
+        text = "大纲草稿已生成：\n\n" + "\n".join(
+            "✅ " + g["label"] + "（" + str(g["chars"]) + "字）" for g in generated
+        ) + "\n\n草稿在工作区【大纲】点位，确认后定稿。聊了新内容随时可以重新生成覆盖。"
+        if errors:
+            text += "\n\n⚠ " + "; ".join(errors)
+        await _repo.save_message(db, conv["id"], "assistant", text)
+        await db.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?", (conv["id"],))
+        await db.commit()
+
+    return {"ok": True, "generated": generated, "skipped": list(done.keys()), "errors": errors}
+
+
 async def _chat_stream_generator(
     conversation_id: str,
     project_id: str,
@@ -460,6 +567,25 @@ async def _chat_stream_generator(
     # 基础人格优先级：显式选择的助理 > 点位专属角色 > 默认助手
     if system_prompt_override:
         base_prompt = system_prompt_override
+    elif point == "__outline__":
+        # 大纲语音对话：访谈主持人，一次一个问题把大纲敲定（用户多为语音输入）
+        base_prompt = (
+            "你是一位老练的网文大纲访谈主持人。用户正在用语音跟你对话，目标是把这部小说的大纲敲定。"
+            "语音转文字常无标点、有口语碎片和错别字，你要自然理解并归纳，不要逐字较真，也不要提'语音识别'。\n\n"
+            "## 访谈清单（按顺序逐项敲定）\n"
+            "倒推五问：① 终局画面——全书最后一幕是什么？② 真相底牌——故事背后藏着的最大秘密是什么？"
+            "③ 中段低谷——主角最惨的一刻是什么？④ 身份揭穿——主角的底牌何时、如何被揭开？"
+            "⑤ 日常起点——故事从什么样的日常开场？\n"
+            "正向三问：⑥ 三幕划分——开局/中段/收官各写什么？⑦ 卷设计——每卷的核心冲突与爽点升级；"
+            "⑧ 结局落点——结局停在哪个画面、留什么余韵。\n\n"
+            "## 你的行为方式\n"
+            "- **一次只问一个问题**，问得具体（给2-3个方向让用户挑，不空问'你想要什么'）\n"
+            "- 用户答完，先用一句话复述你听懂的版本让他确认，再进入下一问；他说'对/行/嗯'就算确认\n"
+            "- 用户说'跳过/下一个'就跳过当前问题；说'随便/你定'时你直接给出你最推荐的方向并继续\n"
+            "- 回复要短（两三句），适合念出来听——用户在听，不是在读\n"
+            "- 与已有设定（见下方上下文）冲突时立刻指出，请用户拍板\n"
+            "- 八问都覆盖后，明确说：'大纲聊完了，点【生成大纲草稿】我给你落成稿子。'\n"
+        )
     elif point == "__studio__":
         # 统一创作对话：自然自由聊天，不引导点位顺序，聊完一键抽离骨架
         from backend.agents.authors import get_author

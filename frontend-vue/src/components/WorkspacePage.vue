@@ -9,10 +9,11 @@ import OverviewPanel from './OverviewPanel.vue'
 import WritingPanel from './WritingPanel.vue'
 import MessageList from './MessageList.vue'
 import ChatInput from './ChatInput.vue'
+import OutlineStudio from './OutlineStudio.vue'
 import AuthorPicker from './AuthorPicker.vue'
 import IconMoon from './icons/IconMoon.vue'
 import IconSun from './icons/IconSun.vue'
-import { Archive, PanelRight, PenLine, Feather } from 'lucide-vue-next'
+import { Archive, PanelRight, PenLine, Feather, Mic } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -165,6 +166,7 @@ async function handleArchive() {
 
     <div class="workspace-center chat-area">
       <WritingPanel v-if="centerView === 'writing'" class="writing-host" />
+      <OutlineStudio v-else-if="centerView === 'outline'" class="writing-host" />
 
       <template v-else>
       <div class="chat-header">
@@ -194,6 +196,14 @@ async function handleArchive() {
           {{ isArchiving ? '存档中...' : '总结并存档' }}
         </button>
         <span v-else-if="isPointMode && currentPointData?.status === 'done'" class="badge-done">已存档</span>
+        <button
+          class="btn btn-sm mode-pill"
+          title="大纲语音对话：对着麦克风聊，把大纲定下来"
+          aria-label="打开大纲语音对话"
+          @click="centerView = 'outline'"
+        >
+          <Mic :size="13" :stroke-width="1.75" /> 大纲语音对话
+        </button>
         <button
           class="btn btn-sm mode-pill"
           title="切换到小说创作（章节写作）"

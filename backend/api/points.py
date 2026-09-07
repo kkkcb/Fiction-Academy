@@ -19,6 +19,9 @@ router = APIRouter(prefix="/api")
 
 
 def _validate_point(point: str) -> None:
+    # __outline__：大纲语音对话专用伪点位（大纲访谈主持人人格，见 chat.py）
+    if point == "__outline__":
+        return
     if point not in POINT_CONFIGS or point not in POINT_ORDER:
         raise HTTPException(status_code=400, detail=f"Invalid point: {point}")
 
@@ -119,7 +122,13 @@ async def ensure_conversation(project_id: str, point: str):
     msg_count = count_row["cnt"] if count_row else 0
 
     if msg_count == 0:
-        intro = POINT_CONFIGS[point].get("intro", "")
+        intro = (POINT_CONFIGS.get(point) or {}).get("intro", "")
+        if point == "__outline__":
+            intro = (
+                "咱们来把大纲聊定。我一次只问一个问题，你直接说想法就行。\n\n"
+                "第一问——终局画面：全书写到最后，最后一幕是什么景象？"
+                "比如：主角站在烧尽的茶园里送走所有人；或：主角登基那天解甲归田。挑一个方向，或说你的。"
+            )
         if intro:
             async with transaction():
                 await repo.save_message(db, conversation_id, "assistant", intro)

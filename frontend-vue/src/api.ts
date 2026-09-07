@@ -846,3 +846,8 @@ export function studioBuild(projectId: ID): Promise<StudioBuildResult> {
 export function studioDistill(projectId: ID): Promise<StudioDistillResult> {
   return request('POST', `/projects/${projectId}/studio/distill`)
 }
+
+/** 大纲语音对话 → 生成倒推+正向大纲草稿 */
+export function outlineDistill(projectId: ID): Promise<StudioBuildResult> {
+  return request('POST', `/projects/${projectId}/outline-studio/distill`)
+}
