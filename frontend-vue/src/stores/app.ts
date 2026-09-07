@@ -159,9 +159,23 @@ export const useAppStore = defineStore('app', () => {
     if (_currentAbort.value || isStreaming.value) _finalizeStream(false)
   }
 
-  /** 用户主动停止生成：保留已生成的部分内容。 */
+  /** 用户主动停止生成：通知服务端停止（保留已生成部分），本地收尾。 */
   function stopStreaming() {
+    if (currentConversationId.value) {
+      api.stopChatStream(currentConversationId.value).catch(() => {})
+    }
     _finalizeStream(true)
+  }
+
+  /** 刷新/切回对话时接入服务端正在进行的生成（后台任务）。没有进行中的生成则静默跳过。 */
+  function _tryAttachStream(conversationId: ID) {
+    if (isStreaming.value || currentConversationId.value !== conversationId) return
+    // 服务端生成中会先插入一条空 assistant 行——接入时剔除，完成时由回放重建
+    const base = [...messages.value]
+    while (base.length && base[base.length - 1].role === 'assistant' && !(base[base.length - 1].content || '').trim()) {
+      base.pop()
+    }
+    _requestReply(conversationId, '', base, false, true)
   }
 
   async function deleteProject(projectId: ID) {
@@ -301,6 +315,8 @@ export const useAppStore = defineStore('app', () => {
       if (token !== _convToken) return
       messages.value = msgs
       error.value = null
+      // 刷新/切回时：若服务端仍在生成（后台任务），自动接入实时进度
+      _tryAttachStream(conversationId)
     } catch (e) {
       if (token !== _convToken) return
       error.value = (e as Error).message
@@ -354,7 +370,7 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  function _requestReply(conversationId: ID, content: string, baseMessages: Message[], regenerate = false) {
+  function _requestReply(conversationId: ID, content: string, baseMessages: Message[], regenerate = false, attach = false) {
     _abortCurrentStream()
 
     let fullContent = ''
@@ -387,8 +403,7 @@ export const useAppStore = defineStore('app', () => {
     const abort = api.streamChat(
       conversationId,
       content,
-      (chunk: string, type?: ChatChunkType) => {
-        if (currentConversationId.value !== targetConvId) return
+      (chunk: string, type?: ChatChunkType) => {        if (currentConversationId.value !== targetConvId) return
         if (type === 'thinking') {
           thinkingContent += chunk
           latestThinking = thinkingContent
@@ -425,6 +440,13 @@ export const useAppStore = defineStore('app', () => {
       },
       (err: StreamError, partialContent: string) => {
         _currentAbort.value = null
+        if (attach && (err.status === 409 || err.isAbort)) {
+          // 重连时没有进行中的生成：静默收尾，不打扰
+          isStreaming.value = false
+          streamingContent.value = ''
+          streamingThinking.value = ''
+          return
+        }
         if (err.isAbort) {
           if (currentConversationId.value !== targetConvId) {
             isStreaming.value = false
@@ -453,6 +475,7 @@ export const useAppStore = defineStore('app', () => {
       },
       assistantId,
       regenerate,
+      attach,
     )
 
     _currentAbort.value = abort

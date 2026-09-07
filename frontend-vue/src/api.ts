@@ -300,6 +300,7 @@ export function streamChat(
   onError: (err: StreamError, partialContent: string) => void,
   assistantId: ID | '',
   regenerate = false,
+  attach = false,
 ): StreamAbort {
   const xhr = new XMLHttpRequest()
   xhr.open('POST', `${BASE}/conversations/${conversationId}/chat/stream`)
@@ -337,6 +338,7 @@ export function streamChat(
       try {
         const obj = JSON.parse(line)
         if (obj.done) { finish(); return }
+        if (obj.stopped) { finish(); return }
         if (obj.error) { onError(new Error(obj.error) as StreamError, fullContent); finished = true; return }
         if (obj.thinking) { onChunk(obj.thinking, 'thinking') }
         if (obj.content) {
@@ -362,6 +364,7 @@ export function streamChat(
         try {
           const obj = JSON.parse(pending.trim())
           if (obj.done) { finish(); return }
+          if (obj.stopped) { finish(); return }
           if (obj.error) { onError(new Error(obj.error) as StreamError, fullContent); finished = true; return }
           if (obj.content) {
             fullContent += obj.content
@@ -394,9 +397,15 @@ export function streamChat(
   }
 
   watchdog.touch()
-  xhr.send(JSON.stringify({ content, assistant_id: assistantId || '', regenerate }))
+  xhr.send(JSON.stringify({ content, assistant_id: assistantId || '', regenerate, attach }))
 
+  // 生成在服务端后台运行；abort 只断开本地订阅，stopChatStream 才真正停止
   return function abort() { xhr.abort() }
+}
+
+/** 停止服务端后台聊天生成（已生成部分保留） */
+export function stopChatStream(conversationId: ID): Promise<{ ok: boolean; stopped: boolean }> {
+  return request('POST', `/conversations/${conversationId}/chat/stop`)
 }
 
 export function listAssistants(): Promise<Assistant[]> {

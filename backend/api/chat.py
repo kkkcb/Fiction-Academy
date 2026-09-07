@@ -1,4 +1,5 @@
 import json
+import asyncio
 import logging
 import uuid
 
@@ -23,6 +24,7 @@ class ChatRequest(BaseModel):
     content: str = ""
     assistant_id: str | None = None
     regenerate: bool = False
+    attach: bool = False  # True = 只接入进行中的生成（不发起）；没有则 409
 
 
 async def _get_assistant_prompt(db, assistant_id: str | None) -> tuple[str, str]:
@@ -382,21 +384,94 @@ async def studio_build_skeleton(project_id: str):
 
 @router.post("/conversations/{conversation_id}/chat/stream")
 async def stream_chat(conversation_id: str, body: ChatRequest):
+    """聊天流。生成在服务端后台任务中运行，本连接只是订阅者：
+    刷新/断线不中断生成，重连（attach=true 或再次 POST）即可回放继续观看。"""
     db = await get_db()
     conv = await fetch_one(db, "SELECT * FROM conversations WHERE id = ?", (conversation_id,))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return StreamingResponse(
-        _chat_stream_generator(
-            conversation_id,
-            conv["project_id"],
-            body.content,
-            body.assistant_id or "",
-            body.regenerate,
-            conv.get("point") or "",
-        ),
-        media_type="application/x-ndjson",
-    )
+
+    session = _chat_live.get(conversation_id)
+    if session and not session.done:
+        # 已在生成（可能是刷新后重连）：直接订阅观看
+        return StreamingResponse(session.subscribe(), media_type="application/x-ndjson")
+    if body.attach:
+        raise HTTPException(status_code=409, detail="当前没有进行中的生成")
+
+    session = LiveChatSession()
+    _chat_live[conversation_id] = session
+    session.task = asyncio.ensure_future(_run_chat_live(
+        session, conversation_id, conv["project_id"], body.content,
+        body.assistant_id or "", body.regenerate, conv.get("point") or ""))
+    return StreamingResponse(session.subscribe(), media_type="application/x-ndjson")
+
+
+@router.post("/conversations/{conversation_id}/chat/stop")
+async def stop_chat(conversation_id: str):
+    """停止后台生成：已生成部分保留。"""
+    session = _chat_live.get(conversation_id)
+    if session and not session.done:
+        session.cancelled = True
+        return {"ok": True, "stopped": True}
+    return {"ok": True, "stopped": False}
+
+
+class LiveChatSession:
+    """服务端后台聊天会话：事件留档可回放，订阅者断线不影响生成。"""
+
+    def __init__(self):
+        self.events: list[dict] = []
+        self.queues: set[asyncio.Queue] = set()
+        self.cancelled = False
+        self.done = False
+        self.task: asyncio.Task | None = None
+
+    def publish(self, ev: dict) -> None:
+        self.events.append(ev)
+        for q in list(self.queues):
+            q.put_nowait(ev)
+
+    def finish(self) -> None:
+        self.done = True
+        for q in list(self.queues):
+            q.put_nowait(None)
+
+    async def subscribe(self):
+        q: asyncio.Queue = asyncio.Queue()
+        self.queues.add(q)
+        try:
+            for ev in list(self.events):
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+                if ev.get("done") or ev.get("error") or ev.get("stopped"):
+                    return
+            if self.done:
+                return
+            while True:
+                ev = await q.get()
+                if ev is None:
+                    return
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+                if ev.get("done") or ev.get("error") or ev.get("stopped"):
+                    return
+        finally:
+            self.queues.discard(q)
+
+
+_chat_live: dict[str, LiveChatSession] = {}
+
+
+async def _run_chat_live(session: LiveChatSession, conversation_id: str, project_id: str,
+                         user_content: str, assistant_id: str, regenerate: bool, point: str):
+    try:
+        async for ev in _chat_events(conversation_id, project_id, user_content,
+                                     assistant_id, regenerate, point, live=session):
+            session.publish(ev)
+    except Exception as e:  # 后台任务无请求方接异常，必须兜底
+        logger.error("[chat-live] conversation=%s crashed: %s", conversation_id, e, exc_info=True)
+        session.publish({"error": f"生成异常: {str(e)[:120]}"})
+    finally:
+        _chat_live.pop(conversation_id, None)
+        session.finish()
 
 
 class PunctuateBody(BaseModel):
@@ -541,14 +616,16 @@ async def outline_studio_distill(project_id: str):
     return {"ok": True, "generated": generated, "skipped": list(done.keys()), "errors": errors}
 
 
-async def _chat_stream_generator(
+async def _chat_events(
     conversation_id: str,
     project_id: str,
     user_content: str,
     assistant_id: str,
     regenerate: bool,
     point: str = "",
+    live: "LiveChatSession | None" = None,
 ):
+    """纯事件生成器：yield dict。由后台任务驱动，与客户端连接解耦。"""
     db = await get_db()
 
     if regenerate:
@@ -568,11 +645,11 @@ async def _chat_stream_generator(
         # 重新生成复用已有 user 消息：不再追加，历史里已包含它
         user_content = last_user["content"] if last_user else ""
         if not user_content:
-            yield json.dumps({"error": "没有可重新生成的消息"}, ensure_ascii=False) + "\n"
+            yield {"error": "没有可重新生成的消息"}
             return
     else:
         if not user_content.strip():
-            yield json.dumps({"error": "消息不能为空"}, ensure_ascii=False) + "\n"
+            yield {"error": "消息不能为空"}
             return
         async with transaction():
             await repo.save_message(db, conversation_id, "user", user_content)
@@ -628,10 +705,7 @@ async def _chat_stream_generator(
         _author_key = (proj or {}).get("author_key") or ""
         if not _author_key:
             # 作者人格是必选项：没有它就没有文风，不悄悄回退默认作者
-            yield json.dumps(
-                {"error": "还没选择作者人格。请先在项目里选一位作者（决定对话和执笔的文风），选完再回来聊。"},
-                ensure_ascii=False,
-            ) + "\n"
+            yield {"error": "还没选择作者人格。请先在项目里选一位作者（决定对话和执笔的文风），选完再回来聊。"}
             return
         author = get_author(_author_key)
         base_prompt = (
@@ -687,11 +761,13 @@ async def _chat_stream_generator(
     _last_save = _t.time()
     try:
         async for kind, chunk in chat_stream(messages, system_prompt=final_system_prompt, model=assistant_model):
+            if live is not None and live.cancelled:
+                break
             if kind == "reasoning":
-                yield json.dumps({"thinking": chunk}, ensure_ascii=False) + "\n"
+                yield {"thinking": chunk}
             else:
                 full_reply += chunk
-                yield json.dumps({"content": chunk}, ensure_ascii=False) + "\n"
+                yield {"content": chunk}
                 if len(full_reply) - _saved_len >= 120 or _t.time() - _last_save >= 1.0:
                     _saved_len = len(full_reply)
                     _last_save = _t.time()
@@ -700,14 +776,14 @@ async def _chat_stream_generator(
         logger.error("[stream] LLM error for conversation=%s: %s", conversation_id, e)
         if full_reply:
             full_reply += f"\n\n[生成中断: {e}]"
-        yield json.dumps({"error": f"生成失败: {e}"}, ensure_ascii=False) + "\n"
+        yield {"error": f"生成失败: {e}"}
         return
     except Exception as e:
         logger.error("[stream] unexpected error for conversation=%s: %s", conversation_id, e, exc_info=True)
-        yield json.dumps({"error": f"生成失败: {e}"}, ensure_ascii=False) + "\n"
+        yield {"error": f"生成失败: {e}"}
         return
     finally:
-        # 完成落最终版；断线/取消（GeneratorExit）时兜底保存已生成部分；空回复删行
+        # 完成落最终版；取消/异常时兜底保存已生成部分；空回复删行
         if full_reply.strip():
             await db.execute("UPDATE messages SET content = ? WHERE id = ?", (full_reply, _msg_id))
             await db.commit()
@@ -718,4 +794,8 @@ async def _chat_stream_generator(
             await db.execute("DELETE FROM messages WHERE id = ?", (_msg_id,))
             await db.commit()
 
-    yield json.dumps({"done": True}, ensure_ascii=False) + "\n"
+    if live is not None and live.cancelled:
+        yield {"stopped": True}
+        return
+
+    yield {"done": True}
