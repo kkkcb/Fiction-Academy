@@ -462,9 +462,17 @@ async def _chat_stream_generator(
         base_prompt = system_prompt_override
     elif point == "__studio__":
         # 统一创作对话：自然自由聊天，不引导点位顺序，聊完一键抽离骨架
-        from backend.agents.authors import resolve_author_for_genre, get_author
-        proj = await fetch_one(db, "SELECT genre FROM projects WHERE id = ?", (project_id,))
-        author = get_author(resolve_author_for_genre((proj or {}).get("genre", "")))
+        from backend.agents.authors import get_author
+        proj = await fetch_one(db, "SELECT author_key FROM projects WHERE id = ?", (project_id,))
+        _author_key = (proj or {}).get("author_key") or ""
+        if not _author_key:
+            # 作者人格是必选项：没有它就没有文风，不悄悄回退默认作者
+            yield json.dumps(
+                {"error": "还没选择作者人格。请先在项目里选一位作者（决定对话和执笔的文风），选完再回来聊。"},
+                ensure_ascii=False,
+            ) + "\n"
+            return
+        author = get_author(_author_key)
         base_prompt = (
             author["style_dna"]
             + "\n\n你现在是作者「" + author["name"] + "」，正在和用户聊一个想写的故事。"

@@ -593,10 +593,14 @@ async def _write_chapter_generator(project_id: str, user_hint: str, regenerate: 
     _saved_think_len = 0
     for attempt in range(3):
         try:
-            # 作者系统：按书的题材选作者，注入其风格 DNA（替换单一"顶尖网文作者"人格）
-            from backend.agents.authors import resolve_author_for_genre, get_author as _get_author
-            proj = await fetch_one(db, "SELECT genre FROM projects WHERE id = ?", (project_id,))
-            _author = _get_author(resolve_author_for_genre((proj or {}).get("genre", "")))
+            # 作者系统：用项目选定的作者注入其风格 DNA（作者必选，无隐式默认）
+            from backend.agents.authors import get_author as _get_author
+            proj = await fetch_one(db, "SELECT author_key FROM projects WHERE id = ?", (project_id,))
+            _author_key = (proj or {}).get("author_key") or ""
+            if not _author_key:
+                yield emit({"error": "还没选择作者人格——请先在项目设置里选一位作者（决定执笔文风），再开始写章。"})
+                return
+            _author = _get_author(_author_key)
             _writer_persona = _author["style_dna"]
             yield emit({"phase": "writing", "chapter_number": chapter_number,
                         "message": f"执笔：{_author['name']}（{_author['label']}）"})

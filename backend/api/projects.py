@@ -15,6 +15,7 @@ class ProjectCreate(BaseModel):
     genre: Optional[str] = None
     chapter_name_template: Optional[str] = None
     rules_text: Optional[str] = None
+    author_key: Optional[str] = None  # 作者人格（创作对话的文风），创建时应显式选择
 
 
 class ProjectUpdate(BaseModel):
@@ -22,9 +23,18 @@ class ProjectUpdate(BaseModel):
     genre: Optional[str] = None
     chapter_name_template: Optional[str] = None
     rules_text: Optional[str] = None
+    author_key: Optional[str] = None
 
 
-_PROJECT_ALLOWED_FIELDS = {"name", "genre", "chapter_name_template", "rules_text"}
+_PROJECT_ALLOWED_FIELDS = {"name", "genre", "chapter_name_template", "rules_text", "author_key"}
+
+
+def _validate_author_key(key: Optional[str]) -> None:
+    if key is None:
+        return
+    from backend.agents.authors import AUTHORS
+    if key != "" and key not in AUTHORS:
+        raise HTTPException(status_code=400, detail=f"未知的作者人格：{key}")
 
 
 @router.get("")
@@ -75,12 +85,13 @@ async def get_project(project_id: str):
 @router.post("")
 async def create_project(body: ProjectCreate):
     db = await get_db()
+    _validate_author_key(body.author_key)
     pid = str(uuid.uuid4())
     name = body.name.strip() or UNTITLED_NAME
     await db.execute(
-        """INSERT INTO projects (id, name, genre, chapter_name_template, rules_text)
-        VALUES (?, ?, ?, ?, ?)""",
-        (pid, name, body.genre, body.chapter_name_template, body.rules_text),
+        """INSERT INTO projects (id, name, genre, chapter_name_template, rules_text, author_key)
+        VALUES (?, ?, ?, ?, ?, ?)""",
+        (pid, name, body.genre, body.chapter_name_template, body.rules_text, body.author_key or ""),
     )
     await db.commit()
     return await get_project(pid)
@@ -92,6 +103,7 @@ async def update_project(project_id: str, body: ProjectUpdate):
     row = await fetch_one(db, "SELECT 1 FROM projects WHERE id = ?", (project_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Project not found")
+    _validate_author_key(body.author_key)
 
     fields = {
         k: v for k, v in body.model_dump().items()

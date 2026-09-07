@@ -130,6 +130,21 @@ async def health_check():
     }
 
 
+@app.get("/api/authors")
+async def list_authors():
+    """作者人格列表（创建项目/切换文风时的选择器数据，含擅长简介）。"""
+    from backend.agents.authors import AUTHORS
+    return [
+        {
+            "key": key,
+            "name": a["name"],
+            "label": a["label"],
+            "blurb": a.get("blurb", ""),
+        }
+        for key, a in AUTHORS.items()
+    ]
+
+
 # Vue 版是主线前端；dist 已构建则优先托管，否则回退到原生版 frontend/
 _vue_dist = VUE_DIST_DIR if (VUE_DIST_DIR / "index.html").exists() else STATIC_DIR
 if _vue_dist.exists():

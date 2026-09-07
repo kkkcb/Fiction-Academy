@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS projects (
     genre TEXT,
     chapter_name_template TEXT DEFAULT '第{{n}}章 {{title}}',
     rules_text TEXT DEFAULT '',
+    author_key TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -331,6 +332,8 @@ CREATE TABLE IF NOT EXISTS materials (
 """),
     (14, "add_conversations_distilled_rowid",
      "ALTER TABLE conversations ADD COLUMN distilled_rowid INTEGER NOT NULL DEFAULT 0"),
+    (15, "add_projects_author_key",
+     "ALTER TABLE projects ADD COLUMN author_key TEXT DEFAULT ''"),
 ]
 
 _db: aiosqlite.Connection | None = None

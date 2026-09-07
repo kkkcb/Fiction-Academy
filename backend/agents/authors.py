@@ -12,6 +12,7 @@ AUTHORS: dict[str, dict] = {
     "fanren": {
         "name": "忘语",
         "label": "凡人流·仙侠",
+        "blurb": "白描务实、算计流主角：修仙/玄幻升级流的骨架与长线伏笔，节奏稳不崩",
         "pen_name": "忘语",
         "real_author": True,
         "genre": "仙侠修真",
@@ -59,6 +60,7 @@ AUTHORS: dict[str, dict] = {
     "dushi": {
         "name": "鱼人二代",
         "label": "都市·爽文流",
+        "blurb": "打脸节奏、情绪钩子密集：都市重生/赘婿/神医类爽点编排，章节末必留钩",
         "pen_name": "鱼人二代",
         "real_author": True,
         "genre": "都市爽文",
@@ -95,6 +97,7 @@ AUTHORS: dict[str, dict] = {
     "xuanyi": {
         "name": "紫金陈",
         "label": "悬疑·推理流",
+        "blurb": "严密诡计与多层反转：本格推理、社会派悬疑的线索布控与真相反转设计",
         "pen_name": "紫金陈",
         "real_author": True,
         "genre": "悬疑推理",
@@ -130,6 +133,7 @@ AUTHORS: dict[str, dict] = {
     "qingxia": {
         "name": "言归正传",
         "label": "轻松·日常流",
+        "blurb": "吐槽系文风、日常流笑点：轻松搞笑的对话节奏与人设反差萌",
         "pen_name": "言归正传",
         "real_author": True,
         "genre": "轻松日常",
@@ -166,6 +170,7 @@ AUTHORS: dict[str, dict] = {
     "zhouzi": {
         "name": "会说话的肘子",
         "label": "都市·灵气复苏流",
+        "blurb": "网感强的梗文化+热血成长：灵气复苏/异能觉醒类的世界观脑洞",
         "genre": "都市异能",
         "reference": "大王饶命/第一序列/夜的命名术",
         "style_dna": """## 你的文风（肘子流·正经世界不正经主角）
@@ -209,6 +214,7 @@ AUTHORS: dict[str, dict] = {
     "kehuan": {
         "name": "刘慈欣",
         "label": "科幻·硬核流",
+        "blurb": "点子驱动、宏大设定：硬科幻概念推演与文明级冲突的史诗感",
         "pen_name": "刘慈欣",
         "real_author": True,
         "genre": "科幻",
@@ -274,15 +280,16 @@ GENRE_AUTHOR_MAP: dict[str, str] = {
 
 
 def get_author(key: str) -> dict:
-    return AUTHORS.get(key) or AUTHORS["fanren"]
+    """取作者人格；key 无效直接 KeyError——作者必须显式选择，不存在隐式默认。"""
+    return AUTHORS[key]
 
 
 def resolve_author_for_genre(genre: str) -> str:
-    """按书的题材找作者，未匹配默认凡人流。"""
+    """按书的题材找作者；未匹配返回空串——作者必须显式选择，不再默认凡人流。"""
     for g, author in GENRE_AUTHOR_MAP.items():
         if g in (genre or ""):
             return author
-    return "fanren"
+    return ""
 
 
 def author_for_point(point: str, genre: str = "") -> dict:

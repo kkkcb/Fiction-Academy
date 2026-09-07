@@ -4,6 +4,7 @@ import * as api from '../api'
 import { propertyLabel } from '../utils/format'
 import type {
   Project,
+  Author,
   Conversation,
   Message,
   WorkspaceItem,
@@ -193,11 +194,38 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function createProject(name: string, genre?: string, rulesText?: string) {
+  // 作者人格库（创建项目/补选作者时的选择器数据；空数组时视为未加载）
+  const authors = ref<Author[]>([])
+  let authorsLoaded = false
+
+  async function fetchAuthors(force = false) {
+    if (authorsLoaded && !force) return
     try {
-      const data: { name: string; genre?: string; rules_text?: string } = { name }
+      authors.value = await api.getAuthors()
+      authorsLoaded = true
+    } catch (e) {
+      error.value = (e as Error).message
+    }
+  }
+
+  async function selectAuthor(projectId: ID, authorKey: string) {
+    try {
+      const updated = await api.updateProject(projectId, { author_key: authorKey })
+      projects.value = projects.value.map(p => p.id === updated.id ? updated : p)
+      error.value = null
+      return true
+    } catch (e) {
+      error.value = (e as Error).message
+      return false
+    }
+  }
+
+  async function createProject(name: string, genre?: string, rulesText?: string, authorKey?: string) {
+    try {
+      const data: { name: string; genre?: string; rules_text?: string; author_key?: string } = { name }
       if (genre) data.genre = genre
       if (rulesText) data.rules_text = rulesText
+      if (authorKey) data.author_key = authorKey
       const project = await api.createProject(data)
       projects.value = [project, ...projects.value]
       error.value = null
@@ -1323,6 +1351,9 @@ export const useAppStore = defineStore('app', () => {
 
     deleteProject,
     fetchProjects,
+    authors,
+    fetchAuthors,
+    selectAuthor,
     createProject,
     renameProject,
     updateProjectRules,

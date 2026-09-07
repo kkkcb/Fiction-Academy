@@ -28,6 +28,7 @@ async def client():
 
 @pytest_asyncio.fixture
 async def project_id(client: AsyncClient) -> str:
-    resp = await client.post("/api/projects", json={"name": "测试项目"})
+    # author_key 与线上行为一致：作者人格必选，创作对话/写章都依赖它
+    resp = await client.post("/api/projects", json={"name": "测试项目", "author_key": "fanren"})
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]

@@ -5,6 +5,7 @@ import type { ID, Project } from '../types'
 import { useAppStore } from '../stores/app'
 import { relativeTime } from '../utils/format'
 import MaterialLibrary from './MaterialLibrary.vue'
+import AuthorPicker from './AuthorPicker.vue'
 import { Flame, BookOpen, PenLine, BrainCircuit } from 'lucide-vue-next'
 
 const store = useAppStore()
@@ -21,9 +22,18 @@ watch(mainView, v => {
 const creating = ref(false)
 const newName = ref('')
 const newGenre = ref('')
+const newAuthorKey = ref('')
 const nameInputEl = ref<HTMLInputElement | null>(null)
 
 const genres = ['玄幻', '都市', '科幻', '悬疑', '历史', '言情', '其他']
+
+// 题材 → 作者人格 的联动预选（仅建议，用户可改选任何作者）
+const GENRE_AUTHOR: Record<string, string> = {
+  '玄幻': 'fanren',
+  '都市': 'dushi',
+  '科幻': 'kehuan',
+  '悬疑': 'xuanyi',
+}
 
 const isEmpty = computed(() => projects.value.length === 0)
 
@@ -32,8 +42,16 @@ watch(showCreate, async (v) => {
   if (v) {
     await nextTick()
     nameInputEl.value?.focus()
+    store.fetchAuthors()
   }
 })
+
+// 选题材时联动预选对应作者（没映射的题材不预选，用户自己挑）
+function pickGenre(g: string) {
+  newGenre.value = g
+  const suggested = GENRE_AUTHOR[g]
+  if (suggested && !newAuthorKey.value) newAuthorKey.value = suggested
+}
 
 function timeText(p: Project) {
   return relativeTime(p.updated_at)
@@ -54,12 +72,15 @@ function closeCreate() {
 
 async function handleCreate() {
   if (creating.value) return
+  if (!newAuthorKey.value) return // 作者必选：没有文风不让建项目
   creating.value = true
   try {
     // 名称可留空：后端默认「未命名作品」，确定故事核后 AI 自动命名
-    const p = await store.createProject(newName.value.trim(), newGenre.value || '')
+    const p = await store.createProject(newName.value.trim(), newGenre.value || '', undefined, newAuthorKey.value)
     if (p) {
       newName.value = ''
+      newGenre.value = ''
+      newAuthorKey.value = ''
       showCreate.value = false
     }
   } finally {
@@ -203,12 +224,16 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
             :class="{ active: newGenre === g }"
             role="radio"
             :aria-checked="newGenre === g"
-            @click="newGenre = g"
+            @click="pickGenre(g)"
           >{{ g }}</button>
+        </div>
+        <div class="create-author-section">
+          <div class="create-author-title">选择作者人格 <span class="req-star">*</span>——决定对话与执笔的文风</div>
+          <AuthorPicker v-model="newAuthorKey" />
         </div>
         <div class="modal-actions">
           <button class="btn" aria-label="取消" @click="closeCreate">取消</button>
-          <button class="btn btn-primary" :disabled="creating" @click="handleCreate">{{ creating ? '创建中…' : '创建' }}</button>
+          <button class="btn btn-primary" :disabled="creating || !newAuthorKey" @click="handleCreate">{{ creating ? '创建中…' : '创建' }}</button>
         </div>
       </div>
     </div>
@@ -233,3 +258,21 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
     </div>
   </div>
 </template>
+
+<style scoped>
+.create-author-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.req-star {
+  color: var(--accent);
+}
+/* 创建弹窗装下 6 张作者卡片：限宽 + 内部滚动 */
+.modal-card {
+  max-height: 86vh;
+  overflow-y: auto;
+  max-width: 640px;
+}
+</style>

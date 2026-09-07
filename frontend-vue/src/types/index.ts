@@ -1,11 +1,19 @@
 export type ID = string
 
+export interface Author {
+  key: string
+  name: string
+  label: string
+  blurb: string
+}
+
 export interface Project {
   id: ID
   name: string
   genre?: string | null
   chapter_name_template?: string
   rules_text?: string
+  author_key?: string | null
   created_at?: string
   updated_at?: string
 }

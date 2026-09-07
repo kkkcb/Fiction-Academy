@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import { POINT_NAV } from '../utils/format'
@@ -9,9 +9,10 @@ import OverviewPanel from './OverviewPanel.vue'
 import WritingPanel from './WritingPanel.vue'
 import MessageList from './MessageList.vue'
 import ChatInput from './ChatInput.vue'
+import AuthorPicker from './AuthorPicker.vue'
 import IconMoon from './icons/IconMoon.vue'
 import IconSun from './icons/IconSun.vue'
-import { Archive, PanelRight, PenLine } from 'lucide-vue-next'
+import { Archive, PanelRight, PenLine, Feather } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -23,11 +24,37 @@ const {
   points,
   isArchiving,
   sidebarCollapsed,
+  authors,
 } = storeToRefs(store)
 
 const currentProject = computed(() =>
   projects.value.find(p => p.id === currentProjectId.value)
 )
+
+// 作者人格必选：老项目/未选作者时先补选，选完才能聊（后端同样把关）
+const needsAuthor = computed(() =>
+  !!currentProject.value && !currentProject.value.author_key
+)
+watch(needsAuthor, v => { if (v) store.fetchAuthors() }, { immediate: true })
+
+const currentAuthor = computed(() =>
+  authors.value.find(a => a.key === currentProject.value?.author_key)
+)
+
+const pickingAuthor = ref('')
+const pickSaving = ref(false)
+
+async function confirmAuthor() {
+  if (!currentProjectId.value || !pickingAuthor.value || pickSaving.value) return
+  pickSaving.value = true
+  try {
+    if (await store.selectAuthor(currentProjectId.value, pickingAuthor.value)) {
+      pickingAuthor.value = ''
+    }
+  } finally {
+    pickSaving.value = false
+  }
+}
 
 const isPointMode = computed(() => activeMode.value === 'point' && !!currentPoint.value)
 const pointInfo = computed(() => POINT_NAV.find(p => p.key === currentPoint.value))
@@ -147,7 +174,13 @@ async function handleArchive() {
             <span class="chat-header-point-badge">{{ pointInfo?.label }}</span>
             <span class="chat-header-subtitle">{{ pointInfo?.desc }}</span>
           </template>
-          <span v-else class="chat-header-subtitle">自由对话</span>
+          <template v-else>
+            <span v-if="currentAuthor" class="chat-header-author" :title="currentAuthor.blurb">
+              <Feather :size="12" :stroke-width="1.75" />
+              {{ currentAuthor.name }} · {{ currentAuthor.label }}
+            </span>
+            <span class="chat-header-subtitle">自由对话</span>
+          </template>
         </div>
         <button
           v-if="isPointMode && currentPointData?.status !== 'done'"
@@ -190,9 +223,29 @@ async function handleArchive() {
         </button>
       </div>
 
-      <MessageList />
+      <MessageList v-if="!needsAuthor" />
 
-      <ChatInput />
+      <ChatInput v-if="!needsAuthor" />
+
+      <div v-else class="author-gate">
+        <div class="author-gate-card">
+          <div class="author-gate-title">
+            <Feather :size="18" :stroke-width="1.75" />
+            先选一位作者人格
+          </div>
+          <p class="author-gate-desc">
+            作者决定这场创作对话的文风和后续执笔风格——看看每位作者擅长什么，选一位最对你胃口的。
+          </p>
+          <AuthorPicker v-model="pickingAuthor" />
+          <div class="author-gate-actions">
+            <button
+              class="btn btn-primary"
+              :disabled="!pickingAuthor || pickSaving"
+              @click="confirmAuthor"
+            >{{ pickSaving ? '保存中…' : '就用这位，开始聊' }}</button>
+          </div>
+        </div>
+      </div>
       </template>
     </div>
 
@@ -206,3 +259,55 @@ async function handleArchive() {
     <OverviewPanel v-if="showRightPanel" ref="rightRef" :style="{ width: rightWidth + 'px' }" />
   </div>
 </template>
+
+<style scoped>
+.chat-header-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--accent-light);
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+.author-gate {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 24px;
+}
+.author-gate-card {
+  width: min(720px, 100%);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  padding: 24px;
+}
+.author-gate-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.author-gate-title svg {
+  color: var(--accent);
+}
+.author-gate-desc {
+  margin: 8px 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.author-gate-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+</style>

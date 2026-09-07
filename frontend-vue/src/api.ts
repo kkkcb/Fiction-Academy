@@ -23,6 +23,7 @@ import type {
   KgExtractResult,
   GoalState,
   GoalStep,
+  Author,
 } from './types'
 
 const BASE = '/api'
@@ -98,7 +99,11 @@ export function getProject(id: ID): Promise<Project> {
   return request<Project>('GET', `/projects/${id}`)
 }
 
-export function createProject(data: { name: string; genre?: string; rules_text?: string }): Promise<Project> {
+export function getAuthors(): Promise<Author[]> {
+  return request<Author[]>('GET', '/authors')
+}
+
+export function createProject(data: { name: string; genre?: string; rules_text?: string; author_key?: string }): Promise<Project> {
   return request<Project>('POST', '/projects', data)
 }
 
