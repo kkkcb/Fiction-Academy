@@ -319,7 +319,6 @@ body {
 
 .input,
 .modal-input,
-.chat-input,
 .ov-edit-area,
 .conv-rename-input,
 .assistant-select {
@@ -334,7 +333,6 @@ body {
 }
 .input:focus,
 .modal-input:focus,
-.chat-input:focus,
 .ov-edit-area:focus,
 .conv-rename-input:focus,
 .assistant-select:focus {
@@ -343,8 +341,7 @@ body {
   box-shadow: 0 0 0 3px var(--accent-lighter);
 }
 .input::placeholder,
-.modal-input::placeholder,
-.chat-input::placeholder {
+.modal-input::placeholder {
   color: var(--text-muted);
 }
 
