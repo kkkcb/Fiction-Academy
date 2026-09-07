@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { ID, Conversation } from '../types'
 import { useAppStore } from '../stores/app'
 import { POINT_NAV, relativeTime } from '../utils/format'
 import IconTrash from './icons/IconTrash.vue'
-import { ChevronLeft, Plus, BrainCircuit, PanelLeftClose, PanelLeftOpen, MessageSquareText, ChevronDown } from 'lucide-vue-next'
+import { ChevronLeft, BrainCircuit, PanelLeftClose, PanelLeftOpen, MessageSquareText, ChevronDown } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -14,74 +14,53 @@ const {
   conversations,
   currentConversationId,
   points,
-  currentPoint,
-  activeMode,
   assistants,
   currentAssistantId,
   centerView,
   chapters,
   sidebarCollapsed,
+  outlineConvId,
 } = storeToRefs(store)
 
 const currentProject = computed(() =>
   projects.value.find(p => p.id === currentProjectId.value)
 )
 
-const isPointMode = computed(() => activeMode.value === 'point' && !!currentPoint.value)
-
-// 分区折叠（创作流程 / 自由对话）
+// 分区折叠（创作流程 / 对话历史）
 const sectionCollapsed = ref({ points: false, convs: false })
 
-const freeConversations = computed(() => conversations.value.filter(c => !c.point))
-const legacyPointConversations = computed(() => conversations.value.filter(c => c.point))
+// 对话历史：全部会话按更新时间倒序（创作对话/大纲语音/点位对话/自由对话）
+const historyConversations = computed(() =>
+  [...conversations.value]
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+    .slice(0, 30)
+)
+
+function convLabel(c: Conversation): string {
+  if (c.point === '__studio__') return '创作对话'
+  if (c.point === '__outline__') return '🎙 大纲语音'
+  if (c.point) return POINT_NAV.find(p => p.key === c.point)?.label || c.title || '对话'
+  return c.title || '自由对话'
+}
+
+function openConv(c: Conversation) {
+  if (c.point === '__outline__') {
+    store.openOutlineConv(c.id)
+  } else {
+    store.selectConversation(c.id)
+  }
+}
 
 function pointStatus(key: string) {
   const data = points.value.find(d => d.point === key)
   return data?.status || 'pending'
 }
 
-function pointLabel(key: string | null | undefined) {
-  return POINT_NAV.find(p => p.key === key)
-}
-
-const editingConvId = ref<ID | null>(null)
-const editingTitle = ref<string>('')
-const editInputEl = ref<HTMLInputElement | null>(null)
-
-function setEditInput(el: unknown) {
-  if (el instanceof HTMLInputElement) editInputEl.value = el
-}
-
-async function startRename(conv: Conversation) {
-  editingConvId.value = conv.id
-  editingTitle.value = conv.title
-  await nextTick()
-  editInputEl.value?.focus()
-  editInputEl.value?.select()
-}
-
-async function commitRename() {
-  const id = editingConvId.value
-  const title = editingTitle.value.trim()
-  editingConvId.value = null
-  if (id && title) {
-    await store.renameConversation(id, title)
-  }
-}
-
-function cancelRename() {
-  editingConvId.value = null
-}
-
 async function handleDeleteConv(id: ID) {
-  if (confirm('确定删除这个对话？')) {
+  if (confirm('确定删除这个对话？删除后不可恢复。')) {
     await store.deleteConversation(id)
+    if (outlineConvId.value === id) store.openOutlineConv('') // 触发 OutlineStudio 重建新会话
   }
-}
-
-async function handleNewConv() {
-  if (!currentProjectId.value) return
-  await store.createConversation(currentProjectId.value, '新对话')
 }
 
 function goBack() {
@@ -90,10 +69,6 @@ function goBack() {
   } catch (e) {
     console.error('[goBack] navigateTo error:', e)
   }
-}
-
-function onSelectAssistant(e: Event) {
-  store.selectAssistant((e.target as HTMLSelectElement).value)
 }
 </script>
 
@@ -171,66 +146,35 @@ function onSelectAssistant(e: Event) {
       </button>
     </div>
 
-    <!-- 自由对话已合并入创作对话 -->
-    <div class="conv-section" style="display:none">
-      <div class="conv-header section-head" @click.self="sectionCollapsed.convs = !sectionCollapsed.convs">
+    <!-- 对话历史：可打开续聊、可删除 -->
+    <div class="conv-section">
+      <div class="conv-header section-head">
         <span class="section-head-inner" @click="sectionCollapsed.convs = !sectionCollapsed.convs">
           <ChevronDown :size="12" :stroke-width="1.75" class="section-arrow" :class="{ folded: sectionCollapsed.convs }" />
-          自由对话
+          对话历史
         </span>
-        <button class="btn btn-sm" title="新建对话" aria-label="新建对话" @click="handleNewConv">
-          <Plus :size="12" :stroke-width="2" />
-        </button>
       </div>
 
       <div
-        v-for="c in freeConversations"
+        v-for="c in historyConversations"
         v-show="!sectionCollapsed.convs"
         :key="c.id"
         class="conv-item"
-        :class="{ active: activeMode === 'free' && currentConversationId === c.id }"
-        @click="store.selectConversation(c.id)"
+        :class="{ active: currentConversationId === c.id || (c.point === '__outline__' && centerView === 'outline' && outlineConvId === c.id) }"
+        @click="openConv(c)"
       >
-        <input
-          v-if="editingConvId === c.id"
-          :ref="setEditInput"
-          v-model="editingTitle"
-          class="conv-rename-input"
-          @click.stop
-          @keydown.enter="commitRename"
-          @keydown.esc="cancelRename"
-          @blur="commitRename"
-        />
-        <template v-else>
-          <div class="conv-main">
-            <span class="conv-title" @click.stop="startRename(c)" title="点击重命名">{{ c.title }}</span>
-            <span v-if="c.updated_at" class="conv-time">{{ relativeTime(c.updated_at) }}</span>
-          </div>
-          <button class="conv-delete" title="删除" :aria-label="`删除对话${c.title}`" @click.stop="handleDeleteConv(c.id)">
-            <IconTrash :size="12" />
-          </button>
-        </template>
+        <div class="conv-main">
+          <span class="conv-title">{{ convLabel(c) }}</span>
+          <span v-if="c.updated_at" class="conv-time">{{ relativeTime(c.updated_at) }}</span>
+        </div>
+        <button class="conv-delete" title="删除对话" :aria-label="`删除对话 ${convLabel(c)}`" @click.stop="handleDeleteConv(c.id)">
+          <IconTrash :size="12" />
+        </button>
       </div>
 
-      <div v-if="freeConversations.length === 0 && !sectionCollapsed.convs" class="conv-empty">
-        暂无自由对话<br />点击右上角 + 随时开聊
+      <div v-if="historyConversations.length === 0 && !sectionCollapsed.convs" class="conv-empty">
+        还没有对话记录
       </div>
-
-      <template v-if="false && legacyPointConversations.length > 0">
-        <div class="conv-header legacy-header">
-          <span>点位对话（旧）</span>
-        </div>
-        <div
-          v-for="c in legacyPointConversations"
-          :key="c.id"
-          class="conv-item"
-          :class="{ active: currentConversationId === c.id }"
-          @click="store.selectConversation(c.id)"
-        >
-          <span class="conv-title">{{ pointLabel(c.point)?.label || c.title }}</span>
-          <span class="conv-tag">{{ pointLabel(c.point)?.desc || c.point }}</span>
-        </div>
-      </template>
     </div>
       </template>
   </aside>

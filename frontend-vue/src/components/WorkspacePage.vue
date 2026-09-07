@@ -13,7 +13,7 @@ import OutlineStudio from './OutlineStudio.vue'
 import AuthorPicker from './AuthorPicker.vue'
 import IconMoon from './icons/IconMoon.vue'
 import IconSun from './icons/IconSun.vue'
-import { Archive, PanelRight, PenLine, Feather, Mic } from 'lucide-vue-next'
+import { Archive, PanelRight, PenLine, Feather, Mic, Trash2 } from 'lucide-vue-next'
 
 const store = useAppStore()
 const {
@@ -22,11 +22,29 @@ const {
   currentPoint,
   activeMode,
   centerView,
+  currentConversationId,
   points,
   isArchiving,
   sidebarCollapsed,
   authors,
 } = storeToRefs(store)
+
+// 清空当前对话（创作对话删掉后自动重开空白会话）
+const clearingConv = ref(false)
+async function clearCurrentConversation() {
+  if (!currentConversationId.value || !currentProjectId.value || clearingConv.value) return
+  if (!confirm('清空当前对话？全部消息将被删除，不可恢复。')) return
+  clearingConv.value = true
+  try {
+    await store.deleteConversation(currentConversationId.value)
+    await store.openStudio(currentProjectId.value)
+    store.notifySuccess('已清空，开始新对话')
+  } catch (e) {
+    store.error = `清空失败：${(e as Error).message}`
+  } finally {
+    clearingConv.value = false
+  }
+}
 
 const currentProject = computed(() =>
   projects.value.find(p => p.id === currentProjectId.value)
@@ -198,6 +216,17 @@ async function handleArchive() {
           {{ isArchiving ? '存档中...' : '总结并存档' }}
         </button>
         <span v-else-if="isPointMode && currentPointData?.status === 'done'" class="badge-done">已存档</span>
+        <button
+          v-else-if="!isPointMode && currentConversationId"
+          class="btn btn-sm mode-pill"
+          :class="{ loading: clearingConv }"
+          :disabled="clearingConv"
+          title="清空当前对话（删除全部消息，创作对话会重开空白会话）"
+          aria-label="清空对话"
+          @click="clearCurrentConversation"
+        >
+          <Trash2 :size="13" :stroke-width="1.75" /> {{ clearingConv ? '清空中…' : '清空对话' }}
+        </button>
         <button
           class="btn btn-sm mode-pill"
           title="大纲语音对话：对着麦克风聊，把大纲定下来"

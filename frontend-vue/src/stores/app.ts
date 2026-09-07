@@ -95,6 +95,13 @@ export const useAppStore = defineStore('app', () => {
 
   // ===== 小说写作（中央区视图 + 流式写章状态） =====
   const centerView = ref<'chat' | 'writing' | 'outline'>('chat')
+  // 大纲语音对话当前会话（从历史打开时指定；OutlineStudio 自建时回写）
+  const outlineConvId = ref<ID | null>(null)
+
+  function openOutlineConv(id: ID) {
+    outlineConvId.value = id
+    centerView.value = 'outline'
+  }
   const isWritingChapter = ref(false)
   const writingPhase = ref('')
   const writingContent = ref('')
@@ -1305,6 +1312,8 @@ export const useAppStore = defineStore('app', () => {
     currentPoint,
     activeMode,
     centerView,
+    outlineConvId,
+    openOutlineConv,
     chapters,
     totalChapterWords,
     isWritingChapter,

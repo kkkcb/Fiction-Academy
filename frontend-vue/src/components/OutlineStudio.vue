@@ -3,7 +3,7 @@
  * 大纲语音对话：浏览器原生语音识别（Chrome/Edge），说完自动发送，
  * 访谈主持人一次一问把大纲聊定，一键生成倒推+正向大纲草稿。
  */
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
@@ -12,7 +12,7 @@ import { formatMd } from '../utils/format'
 import { Mic, MicOff, Send, ClipboardCheck, ArrowLeft, CircleCheck, Circle } from 'lucide-vue-next'
 
 const store = useAppStore()
-const { currentProjectId } = storeToRefs(store)
+const { currentProjectId, outlineConvId } = storeToRefs(store)
 
 interface LocalMsg { role: 'user' | 'assistant'; content: string }
 
@@ -68,8 +68,15 @@ async function scrollBottom() {
 async function load() {
   if (!currentProjectId.value) return
   try {
-    const ensured = await api.ensurePointConversation(currentProjectId.value, '__outline__')
-    convId.value = ensured.conversation_id
+    // 从对话历史打开：用指定会话；否则默认取/建最新的大纲对话
+    const wanted = outlineConvId.value
+    if (wanted) {
+      convId.value = wanted
+    } else {
+      const ensured = await api.ensurePointConversation(currentProjectId.value, '__outline__')
+      convId.value = ensured.conversation_id
+      outlineConvId.value = ensured.conversation_id
+    }
     const msgs = await api.getMessages(convId.value)
     messages.value = msgs.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content || '' }))
     await scrollBottom()
@@ -79,6 +86,10 @@ async function load() {
 }
 onMounted(load)
 onUnmounted(() => { if (autoSendTimer) clearTimeout(autoSendTimer) })
+// 历史切换/删除后重建：响应 store.outlineConvId 变化重新加载
+watch(outlineConvId, v => {
+  if (v !== convId.value) load()
+})
 
 function send() {
   const text = input.value.trim()
