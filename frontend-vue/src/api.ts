@@ -24,6 +24,7 @@ import type {
   GoalState,
   GoalStep,
   Author,
+  PromptLibrary,
 } from './types'
 
 const BASE = '/api'
@@ -101,6 +102,10 @@ export function getProject(id: ID): Promise<Project> {
 
 export function getAuthors(): Promise<Author[]> {
   return request<Author[]>('GET', '/authors')
+}
+
+export function getPrompts(): Promise<PromptLibrary> {
+  return request<PromptLibrary>('GET', '/prompts')
 }
 
 export function createProject(data: { name: string; genre?: string; rules_text?: string; author_key?: string }): Promise<Project> {

@@ -7,6 +7,22 @@ export interface Author {
   blurb: string
 }
 
+export interface PromptEntry {
+  group: string
+  node: string
+  name: string
+  source: string
+  text: string
+  note: string
+  chars: number
+}
+
+export interface PromptLibrary {
+  total: number
+  groups: { group: string; count: number }[]
+  items: PromptEntry[]
+}
+
 export interface Project {
   id: ID
   name: string

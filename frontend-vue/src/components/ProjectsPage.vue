@@ -6,13 +6,14 @@ import { useAppStore } from '../stores/app'
 import { relativeTime } from '../utils/format'
 import MaterialLibrary from './MaterialLibrary.vue'
 import AuthorPicker from './AuthorPicker.vue'
-import { Flame, BookOpen, PenLine, BrainCircuit } from 'lucide-vue-next'
+import PromptLibrary from './PromptLibrary.vue'
+import { Flame, BookOpen, PenLine, BrainCircuit, ScrollText } from 'lucide-vue-next'
 
 const store = useAppStore()
 const { projects } = storeToRefs(store)
 
 const showCreate = ref(false)
-const mainView = ref<'novel' | 'materials'>('novel')
+const mainView = ref<'novel' | 'materials' | 'prompts'>('novel')
 const matRef = ref<InstanceType<typeof MaterialLibrary> | null>(null)
 
 // 切回素材库时：超过 5 分钟静默刷新热榜（平时秒切，无感）
@@ -140,7 +141,7 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
 
 <template>
   <div class="projects-shell">
-    <!-- 左侧工具栏：小说创作 / 素材库 -->
+    <!-- 左侧工具栏：小说创作 / 素材库 / 提示词库 -->
     <nav class="app-rail" aria-label="主导航">
       <div class="app-rail-brand">
         <BrainCircuit :size="20" :stroke-width="1.75" />
@@ -165,10 +166,23 @@ onUnmounted(() => window.removeEventListener('keydown', onEsc))
         <Flame :size="18" :stroke-width="1.75" />
         <span class="rail-label">素材库</span>
       </button>
+      <button
+        class="rail-item"
+        :class="{ active: mainView === 'prompts' }"
+        aria-label="提示词库"
+        title="提示词库（全环节系统提示词统一管理）"
+        @click="mainView = 'prompts'"
+      >
+        <ScrollText :size="18" :stroke-width="1.75" />
+        <span class="rail-label">提示词库</span>
+      </button>
     </nav>
 
     <!-- 素材库页面（常驻不卸载，切换即时渲染） -->
     <MaterialLibrary v-show="mainView === 'materials'" ref="matRef" variant="page" class="rail-content mat-host" />
+
+    <!-- 提示词库：全环节提示词统一查看/复制/优化 -->
+    <PromptLibrary v-if="mainView === 'prompts'" class="rail-content" />
 
     <!-- 小说创作（项目列表） -->
     <div v-if="mainView === 'novel'" class="projects-page rail-content">

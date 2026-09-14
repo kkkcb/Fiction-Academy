@@ -96,7 +96,7 @@ class NoCacheStaticFilesMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheStaticFilesMiddleware)
 
-from backend.api import projects, chat, workspace, chronicle, assistants, skeleton, chapter_writing, points, kg, goal, lint, materials
+from backend.api import projects, chat, workspace, chronicle, assistants, skeleton, chapter_writing, points, kg, goal, lint, materials, prompts
 
 app.include_router(projects.router, prefix="/api/projects")
 app.include_router(chat.router)
@@ -110,6 +110,7 @@ app.include_router(kg.router)
 app.include_router(goal.router)
 app.include_router(lint.router)
 app.include_router(materials.router)
+app.include_router(prompts.router)
 
 
 @app.get("/api/health")

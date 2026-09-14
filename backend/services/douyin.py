@@ -12,6 +12,9 @@ import httpx
 from backend.config import DOUYIN_COOKIE
 from backend.vendors.abogus import ABogus
 
+# 评论区提炼系统提示词（/api/prompts 提示词库引用真身）
+DOUYIN_COMMENT_PROMPT = "你是新闻编辑，擅长提炼网络评论区的核心。"
+
 logger = logging.getLogger(__name__)
 
 _DOUYIN = "https://www.douyin.com"
@@ -143,7 +146,7 @@ async def douyin_discuss(keyword: str, chat_text) -> dict:
         )
         summary = await chat_text(
             messages=[{"role": "user", "content": prompt}],
-            system_prompt="你是新闻编辑，擅长提炼网络评论区的核心。",
+            system_prompt=DOUYIN_COMMENT_PROMPT,
             temperature=0.3,
         )
     except Exception as e:
