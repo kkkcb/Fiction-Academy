@@ -9,16 +9,21 @@ export interface Author {
 
 export interface PromptEntry {
   group: string
+  key: string
   node: string
   name: string
   source: string
   text: string
   note: string
   chars: number
+  editable: boolean
+  overridden: boolean
+  edited_at?: string | null
 }
 
 export interface PromptLibrary {
   total: number
+  overridden: number
   groups: { group: string; count: number }[]
   items: PromptEntry[]
 }

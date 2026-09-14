@@ -176,6 +176,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS prompt_overrides (
+    key TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -334,6 +340,12 @@ CREATE TABLE IF NOT EXISTS materials (
      "ALTER TABLE conversations ADD COLUMN distilled_rowid INTEGER NOT NULL DEFAULT 0"),
     (15, "add_projects_author_key",
      "ALTER TABLE projects ADD COLUMN author_key TEXT DEFAULT ''"),
+    (16, "add_prompt_overrides",
+     """CREATE TABLE IF NOT EXISTS prompt_overrides (
+    key TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+)"""),
 ]
 
 _db: aiosqlite.Connection | None = None

@@ -108,6 +108,14 @@ export function getPrompts(): Promise<PromptLibrary> {
   return request<PromptLibrary>('GET', '/prompts')
 }
 
+export function savePromptOverride(key: string, text: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('PUT', `/prompts/${encodeURIComponent(key)}`, { text })
+}
+
+export function resetPromptOverride(key: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('DELETE', `/prompts/${encodeURIComponent(key)}`)
+}
+
 export function createProject(data: { name: string; genre?: string; rules_text?: string; author_key?: string }): Promise<Project> {
   return request<Project>('POST', '/projects', data)
 }

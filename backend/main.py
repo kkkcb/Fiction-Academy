@@ -53,6 +53,14 @@ async def lifespan(app: FastAPI):
     await ensure_builtins()
     logger.info("Built-in assistants ensured")
 
+    # 提示词库的自定义覆盖重放：重启后恢复用户编辑（热更新运行时对象）
+    try:
+        n = await prompts.apply_saved_overrides()
+        if n:
+            logger.info("Prompt overrides applied: %d", n)
+    except Exception:
+        logger.warning("Prompt overrides replay failed", exc_info=True)
+
     # 热榜预热：启动即拉取（用户首次打开素材库秒开），之后每 10 分钟保温
     import asyncio
     from backend.api.materials import warm_hot_cache, _HOT_CACHE
