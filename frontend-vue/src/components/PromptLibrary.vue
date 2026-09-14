@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import * as api from '../api'
 import type { PromptEntry } from '../types'
 import { formatMd } from '../utils/format'
-import { Search, Copy, Check, FileCode2, Pencil, RotateCcw, X, ArrowLeft } from 'lucide-vue-next'
+import { Search, Copy, Check, FileCode2, Pencil, RotateCcw, X, ArrowLeft, ChevronsDownUp, ChevronsUpDown } from 'lucide-vue-next'
 
 const loading = ref(true)
 const loadError = ref('')
@@ -41,10 +41,70 @@ const copied = ref(false)
 
 const renderedHtml = computed(() => (selected.value ? formatMd(selected.value.text) : ''))
 
+// ---- 渐进式披露：按 ## 小节切分，标题常驻、正文按需展开 ----
+interface PromptSection {
+  title: string
+  html: string
+  preview: string
+  hasTitle: boolean
+}
+
+function stripTags(h: string): string {
+  const d = document.createElement('div')
+  d.innerHTML = h
+  return d.textContent || ''
+}
+
+const sections = computed<PromptSection[]>(() => {
+  const html = renderedHtml.value
+  if (!html) return []
+  const re = /<h2[^>]*>([\s\S]*?)<\/h2>/g
+  const matches = [...html.matchAll(re)]
+  if (!matches.length) return [{ title: '', html, preview: '', hasTitle: false }]
+  const secs: PromptSection[] = []
+  const pre = html.slice(0, matches[0].index!)
+  if (pre.trim()) secs.push({ title: '', html: pre, preview: '', hasTitle: false })
+  matches.forEach((m, i) => {
+    const end = m.index! + m[0].length
+    const nextStart = i + 1 < matches.length ? matches[i + 1].index! : html.length
+    const body = html.slice(end, nextStart)
+    secs.push({
+      title: stripTags(m[1]).trim(),
+      html: body,
+      preview: stripTags(body).trim().replace(/\s+/g, ' ').slice(0, 64),
+      hasTitle: true,
+    })
+  })
+  return secs
+})
+
+// 展开状态：默认只展开第一个带标题小节（渐进式披露），其余看标题+预览按需点开
+const expandedSecs = ref<Set<number>>(new Set())
+
+function firstTitledIdx(): number {
+  return sections.value.findIndex(s => s.hasTitle)
+}
+
+function toggleSec(i: number) {
+  const s = new Set(expandedSecs.value)
+  s.has(i) ? s.delete(i) : s.add(i)
+  expandedSecs.value = s
+}
+
+function expandAll() {
+  expandedSecs.value = new Set(sections.value.map((_, i) => i).filter(i => sections.value[i].hasTitle))
+}
+
+function collapseAll() {
+  expandedSecs.value = new Set()
+}
+
 function select(e: PromptEntry) {
   selectedKey.value = e.key
   viewMode.value = 'render'
   editing.value = false
+  const first = e.text.trim() && sections.value.length ? firstTitledIdx() : -1
+  expandedSecs.value = first >= 0 ? new Set([first]) : new Set()
 }
 
 function startEdit() {
@@ -64,6 +124,8 @@ async function saveEdit() {
     items.value = d.items
     overriddenTotal.value = d.overridden
     editing.value = false
+    const first = firstTitledIdx()
+    expandedSecs.value = first >= 0 ? new Set([first]) : new Set()
   } catch (e) {
     alert(`保存失败：${(e as Error).message}`)
   } finally {
@@ -99,6 +161,8 @@ onMounted(async () => {
     items.value = d.items
     overriddenTotal.value = d.overridden
     if (d.items.length) selectedKey.value = d.items[0].key
+    const first = firstTitledIdx()
+    if (first >= 0) expandedSecs.value = new Set([first])
   } catch (e) {
     loadError.value = (e as Error).message
   } finally {
@@ -193,7 +257,34 @@ onMounted(async () => {
             </button>
           </div>
         </template>
-        <div v-else-if="viewMode === 'render'" class="markdown-body pl-rendered" v-html="renderedHtml"></div>
+        <div v-else-if="viewMode === 'render'" class="pl-rendered">
+          <template v-if="sections.filter(s => s.hasTitle).length > 1">
+            <div class="pl-sec-toolbar">
+              <span class="pl-sec-hint">按小节渐进展开</span>
+              <span class="pl-flex" />
+              <button class="btn btn-sm" @click="expandAll"><ChevronsDownUp :size="12" :stroke-width="1.75" /> 全部展开</button>
+              <button class="btn btn-sm" @click="collapseAll"><ChevronsUpDown :size="12" :stroke-width="1.75" /> 全部收起</button>
+            </div>
+            <section
+              v-for="(s, i) in sections"
+              :key="i"
+              class="pl-sec"
+              :class="{ untitled: !s.hasTitle }"
+            >
+              <button v-if="s.hasTitle" class="pl-sec-head" @click="toggleSec(i)">
+                <span class="pl-sec-caret" :class="{ open: expandedSecs.has(i) }">▸</span>
+                <span class="pl-sec-title">{{ s.title }}</span>
+                <span class="pl-sec-mark" v-if="expandedSecs.has(i)">收起</span>
+              </button>
+              <div v-if="!s.hasTitle || expandedSecs.has(i)" class="markdown-body pl-sec-body" v-html="s.html"></div>
+              <button v-else-if="s.preview" class="pl-sec-preview" @click="toggleSec(i)" :title="s.preview">
+                {{ s.preview }}…
+                <span class="pl-sec-more">展开</span>
+              </button>
+            </section>
+          </template>
+          <div v-else class="markdown-body pl-sec-body" v-html="renderedHtml"></div>
+        </div>
         <pre v-else class="pl-raw">{{ selected.text }}</pre>
       </div>
     </section>
@@ -392,6 +483,92 @@ onMounted(async () => {
   line-height: 1.8;
   color: var(--text-primary);
 }
+
+/* ---- 渐进式披露：小节折叠 ---- */
+.pl-sec-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.pl-sec-hint { font-size: 11.5px; color: var(--text-tertiary); }
+.pl-sec {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.pl-sec.untitled { border: 0; background: transparent; margin-bottom: 10px; }
+.pl-sec-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.pl-sec-head:hover { background: var(--accent-lighter); }
+.pl-sec-caret {
+  flex: none;
+  font-size: 11px;
+  color: var(--accent);
+  transition: transform 0.15s;
+}
+.pl-sec-caret.open { transform: rotate(90deg); }
+.pl-sec-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pl-sec-mark { margin-left: auto; flex: none; font-size: 11px; color: var(--text-tertiary); }
+.pl-sec-preview {
+  width: 100%;
+  padding: 0 14px 10px 34px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-family: inherit;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pl-sec-preview:hover { color: var(--text-secondary); }
+.pl-sec-more { color: var(--accent); margin-left: 4px; white-space: nowrap; }
+.pl-sec-body { padding: 4px 16px 12px; }
+
+/* ---- 缩进层级区分：每深一层，字号/颜色递减 + bullet 形状不同 ---- */
+.pl-rendered :deep(li) { font-size: 13.5px; color: var(--text-primary); }
+.pl-rendered :deep(li ul li),
+.pl-rendered :deep(li ol li) {
+  font-size: 12.75px;
+  color: var(--text-secondary);
+}
+.pl-rendered :deep(li ul li ul li),
+.pl-rendered :deep(li ol li ul li),
+.pl-rendered :deep(li ul li ol li),
+.pl-rendered :deep(li ol li ol li) {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.pl-rendered :deep(ul) { list-style-type: disc; }
+.pl-rendered :deep(ul ul) { list-style-type: circle; }
+.pl-rendered :deep(ul ul ul) { list-style-type: square; }
+/* 深层嵌套的引导线弱化，靠字体差异和 bullet 区分层级 */
+.pl-rendered :deep(ul ul),
+.pl-rendered :deep(ol ol) { margin-top: 2px; }
 .pl-raw {
   margin: 0;
   padding: 16px;
