@@ -166,10 +166,28 @@ export function parseConsultRecord(content: unknown): ConsultRecord | null {
 const _mdCache = new Map<string, string>()
 const _MD_CACHE_MAX = 100
 
+// CommonMark 对中文的边界判定坑：**粗体** 的收尾 ** 前面是标点（如 “”）后面紧跟汉字时
+// 不算 right-flanking，marked 会漏出原始星号（例：**“古生物”+“生命的循环”**这…）。
+// 修法（同 ICE 踩坑实录 fixInlineSyntax 思路）：这类 marked 必错/等价的场景手工转 <strong>。
+// 先把行内/围栏代码换成私用区占位符（\uE000…\uE001），避免误伤代码示例里的 **。
+const _CJK = '\\u4e00-\\u9fff\\u3400-\\u4dbf'
+const _CODE_SPAN_RE = /(```[\s\S]*?```|`[^`\n]+`)/g
+const _BOLD_BEFORE_CJK_RE = new RegExp(`\\*\\*([^*\\n]+?)\\*\\*(?=[${_CJK}])`, 'g')
+const _BOLD_AFTER_CJK_RE = new RegExp(`(?<=[${_CJK}])\\*\\*([^*\\n]+?)\\*\\*`, 'g')
+
+function _fixCjkBold(t: string): string {
+  const kept: string[] = []
+  const shielded = t.replace(_CODE_SPAN_RE, m => `\uE000${kept.push(m) - 1}\uE001`)
+  const fixed = shielded
+    .replace(_BOLD_BEFORE_CJK_RE, '<strong>$1</strong>')
+    .replace(_BOLD_AFTER_CJK_RE, '<strong>$1</strong>')
+  return fixed.replace(/\uE000(\d+)\uE001/g, (_, i) => kept[Number(i)])
+}
+
 function _normalizeMd(text: string): string {
   let t = text.replace(/\r\n/g, '\n')
   t = t.replace(/\n{3,}/g, '\n\n')
-  return t
+  return _fixCjkBold(t)
 }
 
 function _fallbackMd(text: string): string {
