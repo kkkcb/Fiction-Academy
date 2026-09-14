@@ -11,7 +11,6 @@ DELETE /api/prompts/{key}    恢复代码默认值
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.config import SYSTEM_PROMPT
 from backend.agents.authors import AUTHORS
 from backend.agents.personas import POINT_PERSONAS
 from backend.agents import chapter_plan, reviewer, style_editor, chronicle, guide, expert_panel
@@ -58,14 +57,13 @@ def _entries() -> list[dict]:
     ))
     es.append(_e(
         "创作对话", "default.assistant", "普通对话", "默认助手系统提示词", "backend/config.py",
-        SYSTEM_PROMPT, "非 studio/点位对话的兜底人格（很少用到）",
+        _config.SYSTEM_PROMPT, "非 studio/点位对话的兜底人格（很少用到）",
     ))
     for a in assistants.BUILTIN_ASSISTANTS:
         es.append(_e(
             "创作对话", f"assistant.builtin.{a['id']}", "可切换助理", f"内置助理：{a['name']}",
             "backend/api/assistants.py", a["system_prompt"],
-            a.get("description", "") + "（已存助理表，去对话里的助理管理改，此处只读）",
-            editable=False,
+            a.get("description", "") + "（存在助理表，保存直接写表、对话里即时生效）",
         ))
     es.append(_e(
         "创作对话", "outline.interview", "大纲语音访谈", "访谈主持人系统提示词", "backend/api/chat.py",
@@ -311,28 +309,42 @@ async def list_prompts():
     entries = _entries()
     overrides = await prompt_store.all_overrides()
     overridden_count = 0
+    # 内置助理的真身在 assistants 表：展示库里的实时值，与代码默认不同则视为已自定义
+    db = None
     for e in entries:
+        if e["key"].startswith("assistant.builtin."):
+            from backend.database import get_db as _gdb, fetch_one as _fone
+            db = db or await _gdb()
+            aid = e["key"].split("assistant.builtin.", 1)[1]
+            row = await _fone(db, "SELECT system_prompt, updated_at FROM assistants WHERE id = ?", (aid,))
+            if row and row["system_prompt"]:
+                e["text"] = row["system_prompt"]
+                e["chars"] = len(row["system_prompt"])
+                e["overridden"] = row["system_prompt"] != _ORIGINALS.get(e["key"])
+                e["edited_at"] = row["updated_at"]
+                if e["overridden"]:
+                    overridden_count += 1
+                continue
         ov = overrides.get(e["key"])
-        if e["editable"] and ov is not None:
+        if ov is not None:
             e["text"] = ov
             e["chars"] = len(ov)
             e["overridden"] = True
-            e["edited_at"] = None
             overridden_count += 1
         else:
             e["overridden"] = False
-    # 编辑时间单独取一次（轻量：只在有覆盖时）
-    if overridden_count:
-        from backend.database import get_db, fetch_all
-        db = await get_db()
-        rows = await fetch_all(db, "SELECT key, updated_at FROM prompt_overrides")
+
+    # 覆盖条目（非助理）的编辑时间
+    from backend.database import get_db as _gdb, fetch_all as _fall
+    if any(e["overridden"] and not e["key"].startswith("assistant.builtin.") for e in entries):
+        db = db or await _gdb()
+        rows = await _fall(db, "SELECT key, updated_at FROM prompt_overrides")
         stamps = {r["key"]: r["updated_at"] for r in rows}
         for e in entries:
-            if e["overridden"]:
+            if e["overridden"] and not e["key"].startswith("assistant.builtin."):
                 e["edited_at"] = stamps.get(e["key"])
-    else:
-        for e in entries:
-            e["edited_at"] = None
+    for e in entries:
+        e.setdefault("edited_at", None)
 
     groups: list[dict] = []
     for e in entries:
@@ -342,19 +354,58 @@ async def list_prompts():
     return {"total": len(entries), "overridden": overridden_count, "groups": groups, "items": entries}
 
 
+def _builtin_assistant_default(key: str) -> tuple[str, str]:
+    """(assistant_id, 代码默认文本)"""
+    aid = key.split("assistant.builtin.", 1)[1]
+    for a in assistants.BUILTIN_ASSISTANTS:
+        if a["id"] == aid:
+            return aid, a["system_prompt"]
+    raise HTTPException(status_code=404, detail=f"未知的助理：{key}")
+
+
+async def _current_effective(key: str, entry: dict) -> str:
+    """保存/恢复前的现行文本（用于入档历史）。"""
+    if key.startswith("assistant.builtin."):
+        from backend.database import get_db as _gdb, fetch_one as _fone
+        aid, _default = _builtin_assistant_default(key)
+        row = await _fone(await _gdb(), "SELECT system_prompt FROM assistants WHERE id = ?", (aid,))
+        return (row and row["system_prompt"]) or _default
+    ov = (await prompt_store.all_overrides()).get(key)
+    return ov if ov is not None else _ORIGINALS.get(key, entry["text"])
+
+
+async def _write_assistant(key: str, text: str) -> None:
+    """内置助理：直接写 assistants 表（对话每请求读库，即时生效）。"""
+    from backend.database import get_db as _gdb
+    aid, _ = _builtin_assistant_default(key)
+    db = await _gdb()
+    await db.execute(
+        "UPDATE assistants SET system_prompt = ?, updated_at = datetime('now') WHERE id = ?",
+        (text, aid),
+    )
+    await db.commit()
+
+
 @router.put("/{key}")
 async def save_prompt_override(key: str, body: PromptOverrideBody):
     entries = _entries()
     entry = _find_entry(entries, key)
     if not entry:
         raise HTTPException(status_code=404, detail=f"未知的提示词：{key}")
-    if not entry["editable"]:
-        raise HTTPException(status_code=400, detail=f"「{entry['name']}」存在助理表里，请到对话的助理管理里修改")
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="提示词不能为空")
-    await prompt_store.set_override(key, text)
-    _apply_patch(key, text)
+
+    # 旧版入档：任何一次修改都不丢历史
+    current = await _current_effective(key, entry)
+    if current != text:
+        await prompt_store.add_history(key, current)
+
+    if key.startswith("assistant.builtin."):
+        await _write_assistant(key, text)
+    else:
+        await prompt_store.set_override(key, text)
+        _apply_patch(key, text)
     return {"ok": True, "key": key, "chars": len(text)}
 
 
@@ -364,6 +415,28 @@ async def reset_prompt_override(key: str):
     entry = _find_entry(entries, key)
     if not entry:
         raise HTTPException(status_code=404, detail=f"未知的提示词：{key}")
-    cleared = await prompt_store.clear_override(key)
-    _apply_patch(key, _ORIGINALS.get(key, entry["text"]))
-    return {"ok": True, "key": key, "cleared": cleared}
+
+    # 恢复前同样入档当前版本
+    current = await _current_effective(key, entry)
+    if current != _ORIGINALS.get(key):
+        await prompt_store.add_history(key, current)
+
+    if key.startswith("assistant.builtin."):
+        aid, default = _builtin_assistant_default(key)
+        await _write_assistant(key, default)
+    else:
+        await prompt_store.clear_override(key)
+        _apply_patch(key, _ORIGINALS.get(key, entry["text"]))
+    return {"ok": True, "key": key, "cleared": True}
+
+
+@router.get("/{key}/history")
+async def prompt_history(key: str):
+    entries = _entries()
+    if not _find_entry(entries, key):
+        raise HTTPException(status_code=404, detail=f"未知的提示词：{key}")
+    rows = await prompt_store.get_history(key)
+    for r in rows:
+        r["chars"] = len(r["text"])
+        r["preview"] = r["text"].strip().replace("\n", " ")[:64]
+    return {"key": key, "items": rows}

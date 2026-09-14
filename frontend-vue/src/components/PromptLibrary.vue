@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import * as api from '../api'
-import type { PromptEntry } from '../types'
+import type { PromptEntry, PromptHistoryItem } from '../types'
 import { formatMd } from '../utils/format'
-import { Search, Copy, Check, FileCode2, Pencil, RotateCcw, X, ArrowLeft, ChevronsDownUp, ChevronsUpDown } from 'lucide-vue-next'
+import { Search, Copy, Check, FileCode2, Pencil, RotateCcw, X, ArrowLeft, ChevronsDownUp, ChevronsUpDown, History, Undo2 } from 'lucide-vue-next'
 
 const loading = ref(true)
 const loadError = ref('')
@@ -103,6 +103,8 @@ function select(e: PromptEntry) {
   selectedKey.value = e.key
   viewMode.value = 'render'
   editing.value = false
+  showHistory.value = false
+  historyItems.value = []
   const first = e.text.trim() && sections.value.length ? firstTitledIdx() : -1
   expandedSecs.value = first >= 0 ? new Set([first]) : new Set()
 }
@@ -153,6 +155,46 @@ async function copyText() {
     copied.value = true
     setTimeout(() => { copied.value = false }, 1500)
   } catch { /* 剪贴板不可用（http 环境）时静默 */ }
+}
+
+// ---- 历史版本 ----
+const showHistory = ref(false)
+const historyItems = ref<PromptHistoryItem[]>([])
+const historyLoading = ref(false)
+const rollingBackId = ref<number | null>(null)
+
+async function toggleHistory() {
+  if (!selected.value) return
+  if (showHistory.value) { showHistory.value = false; return }
+  historyLoading.value = true
+  try {
+    const d = await api.getPromptHistory(selected.value.key)
+    historyItems.value = d.items
+    showHistory.value = true
+  } catch (e) {
+    alert(`拉取历史失败：${(e as Error).message}`)
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+async function rollbackVersion(h: PromptHistoryItem) {
+  if (!selected.value || rollingBackId.value !== null) return
+  rollingBackId.value = h.id
+  try {
+    // 回滚 = 把历史版本作为新版本保存（当前版本会自动入档，不丢）
+    await api.savePromptOverride(selected.value.key, h.text)
+    const d = await api.getPrompts()
+    items.value = d.items
+    overriddenTotal.value = d.overridden
+    editing.value = false
+    const hd = await api.getPromptHistory(selected.value.key)
+    historyItems.value = hd.items
+  } catch (e) {
+    alert(`回滚失败：${(e as Error).message}`)
+  } finally {
+    rollingBackId.value = null
+  }
 }
 
 onMounted(async () => {
@@ -242,6 +284,35 @@ onMounted(async () => {
           <button v-if="!editing && selected.overridden" class="btn btn-sm" @click="resetOverride">
             <RotateCcw :size="12" :stroke-width="1.75" /> 恢复默认
           </button>
+          <button
+            v-if="!editing"
+            class="btn btn-sm"
+            :class="{ 'btn-active': showHistory }"
+            :disabled="historyLoading"
+            @click="toggleHistory"
+          >
+            <History :size="12" :stroke-width="1.75" /> 历史<template v-if="historyItems.length"> ({{ historyItems.length }})</template>
+          </button>
+        </div>
+
+        <!-- 历史版本面板：当前版本之上的都是存档，一键回滚（回滚也留痕） -->
+        <div v-if="showHistory" class="pl-history">
+          <div v-if="!historyItems.length" class="pl-history-empty">还没有历史版本——修改并保存后，旧版本会自动存档在这里</div>
+          <div v-for="h in historyItems" :key="h.id" class="pl-history-row">
+            <div class="pl-history-info">
+              <span class="pl-history-time">{{ (h.created_at || '').slice(5, 16) }}</span>
+              <span class="pl-history-chars">{{ h.chars }} 字</span>
+            </div>
+            <p class="pl-history-preview">{{ h.preview }}…</p>
+            <button
+              class="btn btn-sm pl-history-rollback"
+              :disabled="rollingBackId !== null"
+              @click="rollbackVersion(h)"
+            >
+              <Undo2 :size="12" :stroke-width="1.75" />
+              {{ rollingBackId === h.id ? '回滚中…' : '用此版本' }}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -478,6 +549,43 @@ onMounted(async () => {
 }
 
 .pl-detail-body { margin-top: 18px; max-width: 860px; }
+
+/* ---- 历史版本面板 ---- */
+.pl-history {
+  margin-top: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.pl-history-empty {
+  padding: 18px 16px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.pl-history-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color);
+}
+.pl-history-row:last-child { border-bottom: 0; }
+.pl-history-info { flex: none; width: 110px; display: flex; flex-direction: column; gap: 2px; }
+.pl-history-time { font-size: 12px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.pl-history-chars { font-size: 11px; color: var(--text-tertiary); }
+.pl-history-preview {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pl-history-rollback { flex: none; }
 .pl-rendered {
   font-size: 13.5px;
   line-height: 1.8;

@@ -63,3 +63,31 @@ async def clear_override(key: str) -> bool:
 async def all_overrides() -> dict[str, str]:
     await _ensure_loaded()
     return dict(_cache)
+
+
+# ---- 历史版本：每次保存/恢复前把旧版入档，随时可回滚 ----
+
+_HISTORY_KEEP = 100  # 每个 key 最多留的版本数
+
+
+async def add_history(key: str, text: str) -> None:
+    db = await get_db()
+    await db.execute("INSERT INTO prompt_history (key, text) VALUES (?, ?)", (key, text))
+    # 修剪：只留最近 N 版（按 id 倒序）
+    await db.execute(
+        """DELETE FROM prompt_history WHERE key = ? AND id NOT IN (
+               SELECT id FROM prompt_history WHERE key = ? ORDER BY id DESC LIMIT ?
+           )""",
+        (key, key, _HISTORY_KEEP),
+    )
+    await db.commit()
+
+
+async def get_history(key: str, limit: int = 50) -> list[dict]:
+    db = await get_db()
+    rows = await fetch_all(
+        db,
+        "SELECT id, text, created_at FROM prompt_history WHERE key = ? ORDER BY id DESC LIMIT ?",
+        (key, limit),
+    )
+    return rows

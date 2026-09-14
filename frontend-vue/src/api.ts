@@ -25,6 +25,7 @@ import type {
   GoalStep,
   Author,
   PromptLibrary,
+  PromptHistoryItem,
 } from './types'
 
 const BASE = '/api'
@@ -114,6 +115,10 @@ export function savePromptOverride(key: string, text: string): Promise<{ ok: boo
 
 export function resetPromptOverride(key: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>('DELETE', `/prompts/${encodeURIComponent(key)}`)
+}
+
+export function getPromptHistory(key: string): Promise<{ items: PromptHistoryItem[] }> {
+  return request<{ items: PromptHistoryItem[] }>('GET', `/prompts/${encodeURIComponent(key)}/history`)
 }
 
 export function createProject(data: { name: string; genre?: string; rules_text?: string; author_key?: string }): Promise<Project> {

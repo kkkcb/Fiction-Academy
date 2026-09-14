@@ -21,6 +21,14 @@ export interface PromptEntry {
   edited_at?: string | null
 }
 
+export interface PromptHistoryItem {
+  id: number
+  text: string
+  created_at: string
+  chars: number
+  preview: string
+}
+
 export interface PromptLibrary {
   total: number
   overridden: number

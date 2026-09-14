@@ -182,6 +182,13 @@ CREATE TABLE IF NOT EXISTS prompt_overrides (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS prompt_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -346,6 +353,14 @@ CREATE TABLE IF NOT EXISTS materials (
     text TEXT NOT NULL,
     updated_at TEXT DEFAULT (datetime('now'))
 )"""),
+    (17, "add_prompt_history",
+     """CREATE TABLE IF NOT EXISTS prompt_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_history_key ON prompt_history(key, id DESC);"""),
 ]
 
 _db: aiosqlite.Connection | None = None
