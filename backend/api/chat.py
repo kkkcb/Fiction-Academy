@@ -237,7 +237,8 @@ async def studio_distill(project_id: str):
         "1. 找出新对话里值得沉淀的信息：人物设定、世界观/力量体系、情节走向、伏笔、大纲调整、故事核修正\n"
         "2. 对每个有新信息的点位输出【合并后的完整内容】：现有内容 + 新信息有机融合成一个连贯版本，不是简单拼接；没有新信息的点位不要输出\n"
         "3. 寒暄、重复、纯讨论过程不沉淀\n"
-        "4. leftover 放无法归类但以后可能有用的一句话备忘，没有就空字符串\n\n"
+        "4. leftover 放无法归类但以后可能有用的备忘（被否决的方案、待续话题等），"
+        "多条时用 Markdown 列表分行（每条一行，可用 ①②③ 编号），没有就空字符串\n\n"
         '输出 JSON：{"updates": [{"point": "world_setting", "note": "本次融合了什么", '
         '"content": "该点位合并后的完整内容"}], "leftover": ""}'
     )
@@ -283,7 +284,7 @@ async def studio_distill(project_id: str):
     if applied:
         # Markdown 列表渲染（marked breaks:false 会把段内单换行折叠成空格，必须用列表/空行分段）
         lines = [
-            "- ✅ **【" + a["label"] + "】**" + (a["note"] or (str(a["chars"]) + " 字"))
+            "- **" + a["label"] + "** — " + (a["note"] or (str(a["chars"]) + " 字"))
             for a in applied
         ]
         text = "已把本轮讨论分拣进设定：\n\n" + "\n".join(lines)
@@ -414,7 +415,7 @@ async def studio_build_skeleton(project_id: str):
 
     # 4. 写入一条总结消息到对话
     if generated:
-        summary_lines = ["✅ " + g["label"] + "（" + str(g["chars"]) + "字）" for g in generated]
+        summary_lines = ["- **" + g["label"] + "** · " + str(g["chars"]) + " 字" for g in generated]
         text = "骨架生成完成！\n\n" + "\n".join(summary_lines)
         if errors:
             text += "\n\n⚠ " + "; ".join(errors)
@@ -646,7 +647,7 @@ async def outline_studio_distill(project_id: str):
 
     if generated:
         text = "大纲草稿已生成：\n\n" + "\n".join(
-            "✅ " + g["label"] + "（" + str(g["chars"]) + "字）" for g in generated
+            "- **" + g["label"] + "** · " + str(g["chars"]) + " 字" for g in generated
         ) + "\n\n草稿在工作区【大纲】点位，确认后定稿。聊了新内容随时可以重新生成覆盖。"
         if errors:
             text += "\n\n⚠ " + "; ".join(errors)

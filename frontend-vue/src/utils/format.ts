@@ -190,6 +190,33 @@ function _normalizeMd(text: string): string {
   return _fixCjkBold(t)
 }
 
+// ---- 系统回执（分拣/抽骨架/大纲生成）的显示归一化 ----
+// 历史上这些回执用「段内单换行」拼接（前端 breaks:false 全折叠成一行），
+// ①②③ 编号和 ✅ 标签也挤在一起。新模板已是列表；这里把旧格式的存量消息
+// 在渲染时重排成同样的列表，避免再写一轮数据迁移。只对回执开头的消息生效。
+const _RECEIPT_PREFIX_RE = /^(已把本轮讨论分拣进设定|骨架生成完成|大纲草稿已生成)/
+const _NUM_MARK_RE = /(?<!\n- )([\u2460-\u2473])/g // ①-⑳
+
+function _normalizeReceipt(t: string): string {
+  let s = t
+  // 旧式「- ✅【点位】」或「✅【点位】」→ 粗体点位行
+  s = s.replace(/(?:^|\n)(?:- )?✅【([^】]+)】/g, (_m, label) => `\n- **${label}** ·`)
+  // 旧式「✅ 点位（n字）」行（build/大纲回执）→ 列表
+  s = s.replace(/(?:^|\n)✅\s*([^\n（]{1,12})（(\d+)字）/g, (_m, label, n) => `\n- **${label}** · ${n} 字`)
+  // ①②③ 各自成行成列表项
+  s = s.replace(_NUM_MARK_RE, '\n- $1')
+  // 「另：」起的新段落单独成段
+  s = s.replace(/(?<!\n)(另：)/g, '\n\n$1')
+  return s.replace(/\n{3,}/g, '\n\n').trim()
+}
+
+export function formatReceiptMd(text: string | null | undefined): string {
+  if (!text) return ''
+  const t = text.trim()
+  if (!_RECEIPT_PREFIX_RE.test(t)) return formatMd(text)
+  return formatMd(_normalizeReceipt(t))
+}
+
 function _fallbackMd(text: string): string {
   let h = esc(text)
   h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>')

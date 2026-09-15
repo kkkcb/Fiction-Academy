@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import type { Message, WorkspaceItemType } from '../types'
-import { formatMd, formatContent, parseCommand, parseConsultRecord, formatTime, charCount, pointPersonaName } from '../utils/format'
+import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
 import { Trash2 } from 'lucide-vue-next'
 import ThinkingBlock from './ThinkingBlock.vue'
@@ -29,7 +29,7 @@ const assistantRole = computed(() =>
 )
 
 const userHtml = computed(() => formatContent(m.value.content))
-const assistantHtml = computed(() => formatMd(m.value.content))
+const assistantHtml = computed(() => formatReceiptMd(m.value.content))
 const timeText = computed(() => formatTime(m.value.created_at))
 const countText = computed(() => charCount(m.value.content))
 const showCount = computed(() => !isUser.value && m.value.content.length > 50)
