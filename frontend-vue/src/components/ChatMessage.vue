@@ -34,17 +34,20 @@ const timeText = computed(() => formatTime(m.value.created_at))
 const countText = computed(() => charCount(m.value.content))
 const showCount = computed(() => !isUser.value && m.value.content.length > 50)
 
-// 可点击选项：按问题分组挂在各自段落下；点选→确认→一次发送（Trae 式两段交互）
+// 可点击选项：按问题分组挂在各自段落下；点选/填写→确认→一次发送（Trae 式两段交互）
 const choicesPicked = ref(false)
 const selected = ref<Record<number, string>>({}) // qno → 选项 value
+const openDrafts = ref<Record<number, string>>({}) // qno → 开放问题的输入草稿
 
 const segments = computed(() => {
   if (isUser.value || !props.isLastAssistant || props.isStreaming) return []
   return splitMessageWithChoices(m.value.content)
 })
-const choiceSegs = computed(() => segments.value.filter(s => s.choices))
-const answered = computed(() => Object.keys(selected.value).length)
-const showChoices = computed(() => !choicesPicked.value && choiceSegs.value.length > 0)
+const answerableSegs = computed(() => segments.value.filter(s => s.choices || s.open))
+const answered = computed(() =>
+  answerableSegs.value.filter(s => selected.value[s.qno] || (openDrafts.value[s.qno] || '').trim()).length,
+)
+const showChoices = computed(() => !choicesPicked.value && answerableSegs.value.length > 0)
 
 function toggleChoice(qno: number, value: string) {
   if (selected.value[qno] === value) delete selected.value[qno]
@@ -55,13 +58,14 @@ function toggleChoice(qno: number, value: string) {
 
 function resetChoices() {
   selected.value = {}
+  openDrafts.value = {}
 }
 
 function confirmChoices() {
   if (!store.currentConversationId || answered.value === 0) return
-  const lines = choiceSegs.value
-    .filter(s => selected.value[s.qno])
-    .map(s => `${s.qno}. ${selected.value[s.qno]}`)
+  const lines = answerableSegs.value
+    .filter(s => selected.value[s.qno] || (openDrafts.value[s.qno] || '').trim())
+    .map(s => `${s.qno}. ${selected.value[s.qno] || (openDrafts.value[s.qno] || '').trim()}`)
   choicesPicked.value = true
   store.sendMessage(store.currentConversationId, lines.join('\n'))
 }
@@ -210,13 +214,24 @@ async function doPin() {
               @click="toggleChoice(seg.qno, opt.value)"
             >{{ opt.label }}</button>
           </div>
+          <!-- 开放问题：行内输入框直接作答 -->
+          <div v-if="seg.open && showChoices" class="msg-open-answer">
+            <span class="choice-qno">{{ seg.qno }}</span>
+            <input
+              class="open-input"
+              :value="openDrafts[seg.qno] || ''"
+              placeholder="直接回答这个问题（回车即连同其他所选一起发送）"
+              @input="openDrafts = { ...openDrafts, [seg.qno]: ($event.target as HTMLInputElement).value }"
+              @keydown.enter="confirmChoices"
+            />
+          </div>
         </template>
-        <div v-if="showChoices && choiceSegs.length" class="msg-choices-bar">
-          <span class="choices-progress">已选 {{ answered }}/{{ choiceSegs.length }}</span>
+        <div v-if="showChoices && answerableSegs.length" class="msg-choices-bar">
+          <span class="choices-progress">已答 {{ answered }}/{{ answerableSegs.length }}</span>
           <span class="choices-flex"></span>
           <button v-if="answered" class="btn btn-sm" @click="resetChoices">重置</button>
           <button class="btn btn-sm btn-primary" :disabled="!answered" @click="confirmChoices">
-            {{ answered ? `发送所选（${answered}）` : '点上方选项作答' }}
+            {{ answered ? `发送所选（${answered}）` : '点选项或在输入框作答' }}
           </button>
         </div>
         <div v-if="!segments.length" v-html="assistantHtml"></div>
@@ -312,4 +327,26 @@ async function doPin() {
 }
 .choices-progress { font-size: 12px; color: var(--text-tertiary); }
 .choices-flex { flex: 1; }
+
+/* 开放问题的行内作答输入框 */
+.msg-open-answer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.open-input {
+  flex: 1;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  outline: none;
+  font-family: inherit;
+  min-width: 0;
+}
+.open-input:focus { border-color: var(--accent); }
+.open-input::placeholder { color: var(--text-tertiary); }
 </style>

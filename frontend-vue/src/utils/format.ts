@@ -243,7 +243,8 @@ export function parseChoiceOptions(text: string | null | undefined): ChoiceOptio
 export interface MessageSegment {
   md: string
   choices: ChoiceOption[] | null
-  qno: number // 有选项的段落依次编号（1、2…），发送时作为问题号
+  open: boolean // 无枚举选项的开放问题：给行内输入框直接作答
+  qno: number // 可作答的段落依次编号（1、2…），发送时作为问题号
 }
 
 export function splitMessageWithChoices(text: string | null | undefined): MessageSegment[] {
@@ -268,24 +269,34 @@ export function splitMessageWithChoices(text: string | null | undefined): Messag
   let qno = 0
   for (const b of blocks) {
     if (!b.trim()) continue
-    const choices = _optionsForBlock(b)
-    if (choices) qno++
-    segs.push({ md: b, choices, qno: choices ? qno : 0 })
+    const { choices, open } = _optionsForBlock(b)
+    if (choices || open) qno++
+    segs.push({ md: b, choices: choices || null, open, qno: choices || open ? qno : 0 })
   }
   return segs
 }
 
-function _optionsForBlock(block: string): ChoiceOption[] | null {
-  if (!_QUESTION_CUE_RE.test(block)) return null
+// 是否/要不要类问句 → 「要 / 不要」快捷项
+const _YESNO_RE = /要不要|是否|能不能|可不可以|行不行/
+
+function _optionsForBlock(block: string): { choices: ChoiceOption[] | null; open: boolean } {
+  if (!_QUESTION_CUE_RE.test(block)) return { choices: null, open: false }
   // 1) 每行一个选项（A./①/1.）
   const lineOpts = _parseLineOptions(block.split('\n'), block.split('\n').length - 1)
-  if (lineOpts.length) return lineOpts
+  if (lineOpts.length) return { choices: lineOpts, open: false }
   // 2) 行内挤在一起的编号选项
   const inlineOpts = _parseInlineOptions(block)
-  if (inlineOpts.length) return inlineOpts
+  if (inlineOpts.length) return { choices: inlineOpts, open: false }
   // 3) 「是X，还是Y？」式二选一
   const binary = _parseBinaryChoice(block)
-  return binary.length ? binary : null
+  if (binary.length) return { choices: binary, open: false }
+  // 4) 要不要/是否类问句 → 「要/不要」快捷项 + 输入框（可点快答，也可打字补充）
+  if (_YESNO_RE.test(block)) {
+    return { choices: [{ label: '要', value: '要' }, { label: '不要', value: '不要' }], open: true }
+  }
+  // 5) 其余含问句的段落 → 开放问题，给行内输入框
+  if (/？/.test(block)) return { choices: null, open: true }
+  return { choices: null, open: false }
 }
 
 // 「…是X，还是Y？」→ 两个可点选项。逐句扫描（一个块里可能有多个问句，
@@ -384,7 +395,9 @@ function _parseInlineOptions(text: string): ChoiceOption[] {
       }
       const content = chunk.slice(start, end).trim().replace(/[。；;\s]+$/, '')
       if (content.length > 100 || content.length <= 2) { items.length = 0; break }
-      items.push({ label: _clip(content, 18), value: content })
+      // label 去掉 A./①/1. 序号前缀——问题号徽标已在，叠着显示难看；value 保留供 AI 对位
+      const bare = content.replace(/^[A-H][.、]\s*|^[\u2460-\u2467][.、]?\s*|^\d[.、]\s*/, '')
+      items.push({ label: _clip(bare, 18), value: content })
     }
     if (items.length >= 2) return items
   }
