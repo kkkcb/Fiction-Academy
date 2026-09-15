@@ -234,17 +234,20 @@ const _OPT_MARKERS: RegExp[] = [
 
 const _QUESTION_CUE_RE = /[？?]|选哪|挑哪|哪个|哪条|倾向|你选|来选|定哪个/
 
-export function parseChoiceOptions(text: string | null | undefined): ChoiceOption[] {
-  const first = splitMessageWithChoices(text).find(s => s.choices)
-  return first ? first.choices! : []
+// ---- 按问题分组的选择交互（每个可作答段落：前文 / 选项 / 后文）----
+export interface MessageSegment {
+  pre: string    // 问题引导文（markdown；行内/行式选项时已把选项部分从中剥离，不重复渲染）
+  post: string   // 选项后的补充文（markdown，如「你选哪个？」）
+  choices: ChoiceOption[] | null
+  open: boolean  // 开放问题：行内输入框作答
+  qno: number    // 可作答段落依次编号，发送时作为问题号
 }
 
-// ---- 按问题分组的选项（每个有选项的段落一组，Trae 式点选+确认）----
-export interface MessageSegment {
-  md: string
-  choices: ChoiceOption[] | null
-  open: boolean // 无枚举选项的开放问题：给行内输入框直接作答
-  qno: number // 可作答的段落依次编号（1、2…），发送时作为问题号
+interface _BlockOptions {
+  choices: ChoiceOption[]
+  pre: string
+  post: string
+  open: boolean
 }
 
 export function splitMessageWithChoices(text: string | null | undefined): MessageSegment[] {
@@ -269,38 +272,130 @@ export function splitMessageWithChoices(text: string | null | undefined): Messag
   let qno = 0
   for (const b of blocks) {
     if (!b.trim()) continue
-    const { choices, open } = _optionsForBlock(b)
-    if (choices || open) qno++
-    segs.push({ md: b, choices: choices || null, open, qno: choices || open ? qno : 0 })
+    const opt = _optionsForBlock(b)
+    if (opt) {
+      qno++
+      segs.push({ pre: opt.pre, post: opt.post, choices: opt.choices.length ? opt.choices : null, open: opt.open, qno })
+    } else {
+      segs.push({ pre: b, post: '', choices: null, open: false, qno: 0 })
+    }
   }
   return segs
 }
 
-// 是否/要不要类问句 → 「要 / 不要」快捷项
-const _YESNO_RE = /要不要|是否|能不能|可不可以|行不行/
-
-function _optionsForBlock(block: string): { choices: ChoiceOption[] | null; open: boolean } {
-  if (!_QUESTION_CUE_RE.test(block)) return { choices: null, open: false }
-  // 1) 每行一个选项（A./①/1.）
-  const lineOpts = _parseLineOptions(block.split('\n'), block.split('\n').length - 1)
-  if (lineOpts.length) return { choices: lineOpts, open: false }
-  // 2) 行内挤在一起的编号选项
-  const inlineOpts = _parseInlineOptions(block)
-  if (inlineOpts.length) return { choices: inlineOpts, open: false }
-  // 3) 「是X，还是Y？」式二选一
-  const binary = _parseBinaryChoice(block)
-  if (binary.length) return { choices: binary, open: false }
-  // 4) 要不要/是否类问句 → 「要/不要」快捷项 + 输入框（可点快答，也可打字补充）
-  if (_YESNO_RE.test(block)) {
-    return { choices: [{ label: '要', value: '要' }, { label: '不要', value: '不要' }], open: true }
-  }
-  // 5) 其余含问句的段落 → 开放问题，给行内输入框
-  if (/？/.test(block)) return { choices: null, open: true }
-  return { choices: null, open: false }
+export function parseChoiceOptions(text: string | null | undefined): ChoiceOption[] {
+  const first = splitMessageWithChoices(text).find(s => s.choices)
+  return first ? first.choices! : []
 }
 
-// 「…是X，还是Y？」→ 两个可点选项。逐句扫描（一个块里可能有多个问句，
-// 如"…知道吗？…是X还是Y？"），句内恰好一个「还是」才判，防误伤。
+// 是否/要不要类问句 → 「要 / 不要」快捷项（同时给输入框补充）
+const _YESNO_RE = /要不要|是否|能不能|可不可以|行不行/
+
+function _optionsForBlock(block: string): _BlockOptions | null {
+  if (!_QUESTION_CUE_RE.test(block)) return null
+  // 1) 每行一个选项（A./①/1.）：选项行从正文中剥离，改成可点行
+  const lined = _parseLinedOptions(block)
+  if (lined) return { ...lined, open: false }
+  // 2) 行内挤在一起的编号选项：前文（问句）与选项分离
+  const inlined = _parseInlineRun(block)
+  if (inlined) return { ...inlined, open: false }
+  // 3) 「是X，还是Y？」式二选一
+  const binary = _parseBinaryChoice(block)
+  if (binary.length) return { choices: binary, pre: block, post: '', open: false }
+  // 4) 要不要/是否类问句 → 快捷项 + 输入框
+  if (_YESNO_RE.test(block)) {
+    return { choices: [{ label: '要', value: '要' }, { label: '不要', value: '不要' }], pre: block, post: '', open: true }
+  }
+  // 5) 其余含问句的段落 → 开放问题，行内输入框
+  if (/？/.test(block)) return { choices: [], pre: block, post: '', open: true }
+  return null
+}
+
+// 行式选项：找一段连续的同形态选项行（2-6 行），前后文作为 pre/post
+function _parseLinedOptions(block: string): _BlockOptions | null {
+  const lines = block.split('\n')
+  for (const re of _OPT_MARKERS) {
+    let bestRun: number[] = []
+    let run: number[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim()
+      if (t && re.test(t)) {
+        run.push(i)
+        if (run.length > bestRun.length) bestRun = [...run]
+      } else {
+        run = []
+      }
+    }
+    if (bestRun.length < 2 || bestRun.length > 6) continue
+    const first = bestRun[0]
+    const last = bestRun[bestRun.length - 1]
+    const pre = lines.slice(0, first).join('\n')
+    const post = lines.slice(last + 1).join('\n')
+    if (!_QUESTION_CUE_RE.test(pre + ' ' + post)) continue
+    const items: ChoiceOption[] = []
+    for (const i of bestRun) {
+      const m = lines[i].trim().match(re)
+      if (!m) return null
+      const content = m[2].trim()
+      if (!content || content.length > 60) return null
+      items.push({ label: lines[i].trim(), value: lines[i].trim() })
+    }
+    if (items.length >= 2) return { choices: items, pre, post, open: false }
+  }
+  return null
+}
+
+// 行内选项：在同一段文字里找 A. … B. … C. …（或 ①…②…）的连续序列。
+// 要求字母序连续（A→B→C）、每项非空且 ≤100 字、整段有提问特征——防误伤普通行文。
+// 行内选项：A. … B. … C. …（或 ①…②…）挤在同一段里。编号须连续（A→B→C），
+// 每项 ≤100 字；末选项截到段末。返回前文（问句）与完整选项文本。
+function _parseInlineRun(block: string): _BlockOptions | null {
+  for (const markerRe of [_INLINE_LETTER_RE, _INLINE_CIRCLE_RE, _INLINE_DIGIT_RE]) {
+    const marks: { idx: number; mark: string }[] = []
+    for (const m of block.matchAll(markerRe)) {
+      marks.push({ idx: m.index + m[1].length, mark: m[2] })
+    }
+    let best: { idx: number; mark: string }[] = []
+    let run: { idx: number; mark: string }[] = []
+    const order = (mk: string): number => {
+      const c = mk.charCodeAt(0)
+      if (c >= 0x2460 && c <= 0x2473) return c - 0x2460 + 1
+      return parseInt(mk, 10) || c - 64
+    }
+    for (let i = 0; i < marks.length; i++) {
+      if (run.length && order(marks[i].mark) === order(run[run.length - 1].mark) + 1) run.push(marks[i])
+      else run = [marks[i]]
+      if (run.length > best.length) best = [...run]
+    }
+    if (best.length < 2 || best.length > 6) continue
+    const items: ChoiceOption[] = []
+    for (let i = 0; i < best.length; i++) {
+      const start = best[i].idx
+      let end: number
+      if (i + 1 < best.length) {
+        end = best[i + 1].idx
+      } else {
+        const nl = block.indexOf('\n', start)
+        end = nl >= 0 ? nl : block.length
+      }
+      const content = block.slice(start, end).trim().replace(/[。；;\s]+$/, '')
+      if (content.length > 100 || content.length <= 2) { items.length = 0; break }
+      items.push({ label: content, value: content })
+    }
+    if (items.length >= 2) {
+      return { choices: items, pre: block.slice(0, best[0].idx), post: '', open: false }
+    }
+  }
+  return null
+}
+
+// 边界集：选项标记前的字符。注意 ？——「…是谁？A. …」是 LLM 最常见的行内接法
+const _INLINE_LETTER_RE = /(^|[\s？?：:；;，,（(“"])([A-H])[.、]\s*/g
+const _INLINE_CIRCLE_RE = /(^|[\s？?：:；;，,（(])([\u2460-\u2473])/g
+const _INLINE_DIGIT_RE = /(^|[\s？?：:；;，,（(])(\d)[.、]\s+/g
+
+// 「…是X，还是Y？」→ 两个可点选项。逐句扫描（一个块里可能有多个问句），
+// 句内恰好一个「还是」才判，防误伤叙述句。
 function _parseBinaryChoice(block: string): ChoiceOption[] {
   const sentences = block.split(/(?<=[。！？；\n])/)
   for (const s of sentences) {
@@ -317,100 +412,11 @@ function _parseBinaryChoice(block: string): ChoiceOption[] {
     const a2 = strip(q.slice(hIdx + 2))
     if (a1.length < 2 || a2.length < 2 || a1.length > 60 || a2.length > 60) continue
     return [
-      { label: _clip(a1, 16), value: a1 },
-      { label: _clip(a2, 16), value: a2 },
+      { label: a1, value: a1 },
+      { label: a2, value: a2 },
     ]
   }
   return []
-}
-
-function _parseLineOptions(lines: string[], lastIdx: number): ChoiceOption[] {
-  for (const re of _OPT_MARKERS) {
-    // 从末尾往回收集同形态的选项行
-    let items: ChoiceOption[] = []
-    const tailIsOption = re.test(lines[lastIdx].trim())
-    let listEnd = tailIsOption ? lastIdx : lastIdx - 1
-    while (listEnd >= 0 && !lines[listEnd].trim()) listEnd--
-    let j = listEnd
-    while (j >= 0) {
-      const line = lines[j].trim()
-      if (!line) { j--; continue }
-      const m = line.match(re)
-      if (!m) break
-      const content = m[2].trim()
-      if (content.length > 60 || content.length === 0) break
-      items.unshift({ label: _clip(content, 18), value: line.replace(/^[*>\s]+/, '').trim() })
-      j--
-    }
-    if (items.length >= 2 && items.length <= 6) {
-      // 提问判定：列表后的剩余文本（提问行），或列表前一行
-      const after = lines.slice(listEnd + 1).join(' ')
-      const before = j >= 0 ? lines[j].trim() : ''
-      if (_QUESTION_CUE_RE.test(after) || _QUESTION_CUE_RE.test(before)) {
-        return items
-      }
-    }
-  }
-  return []
-}
-
-// 行内选项：在同一段文字里找 A. … B. … C. …（或 ①…②…）的连续序列。
-// 要求字母序连续（A→B→C）、每项非空且 ≤100 字、整段有提问特征——防误伤普通行文。
-function _parseInlineOptions(text: string): ChoiceOption[] {
-  if (!_QUESTION_CUE_RE.test(text)) return []
-  const chunk = text.slice(-1600)
-  for (const markerRe of [_INLINE_LETTER_RE, _INLINE_CIRCLE_RE, _INLINE_DIGIT_RE]) {
-    // 三个正则都是「边界组 + 标记组」结构：内容从标记字母/数字起切
-    const marks: { idx: number; end: number; mark: string }[] = []
-    for (const m of chunk.matchAll(markerRe)) {
-      marks.push({ idx: m.index + m[1].length, end: m.index + m[0].length, mark: m[2] })
-    }
-    // 找最长的一段「编号递增」的连续 run（A→B→C…、①→②…、1→2…）
-    let best: { idx: number; end: number; mark: string }[] = []
-    let run: { idx: number; end: number; mark: string }[] = []
-    const order = (mk: string): number => {
-      const c = mk.charCodeAt(0)
-      if (c >= 0x2460 && c <= 0x2473) return c - 0x2460 + 1 // ①-⑳
-      return parseInt(mk, 10) || c - 64 // A=1..H=8；数字直接取值
-    }
-    for (let i = 0; i < marks.length; i++) {
-      if (run.length && order(marks[i].mark) === order(run[run.length - 1].mark) + 1) {
-        run.push(marks[i])
-      } else {
-        run = [marks[i]]
-      }
-      if (run.length > best.length) best = [...run]
-    }
-    if (best.length < 2 || best.length > 6) continue
-    const items: ChoiceOption[] = []
-    for (let i = 0; i < best.length; i++) {
-      const start = best[i].idx
-      let end: number
-      if (i + 1 < best.length) {
-        end = best[i + 1].idx
-      } else {
-        // 末选项：截到本段结束（后面可能还有别的问题段落，不是选项内容）
-        const nl = chunk.indexOf('\n', start)
-        end = nl >= 0 ? nl : chunk.length
-      }
-      const content = chunk.slice(start, end).trim().replace(/[。；;\s]+$/, '')
-      if (content.length > 100 || content.length <= 2) { items.length = 0; break }
-      // label 去掉 A./①/1. 序号前缀——问题号徽标已在，叠着显示难看；value 保留供 AI 对位
-      const bare = content.replace(/^[A-H][.、]\s*|^[\u2460-\u2467][.、]?\s*|^\d[.、]\s*/, '')
-      items.push({ label: _clip(bare, 18), value: content })
-    }
-    if (items.length >= 2) return items
-  }
-  return []
-}
-
-// 边界集：选项标记前的字符。注意 ？——「…是谁？A. …」是 LLM 最常见的行内接法
-const _INLINE_LETTER_RE = /(^|[\s？?：:；;，,（(“"])([A-H])[.、]\s*/g
-const _INLINE_CIRCLE_RE = /(^|[\s？?：:；;，,（(])([\u2460-\u2473])/g
-const _INLINE_DIGIT_RE = /(^|[\s？?：:；;，,（(])(\d)[.、]\s+/g
-
-function _clip(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + '…' : s
 }
 
 function _fallbackMd(text: string): string {

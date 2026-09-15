@@ -200,23 +200,23 @@ async function doPin() {
       <ThinkingBlock v-if="!isUser && m.thinking" :text="m.thinking" :streaming="false" />
       <div v-if="isUser" v-html="userHtml"></div>
       <template v-else>
-        <!-- 按段落渲染，有选项的问题段落后面紧跟自己的选项组 -->
+        <!-- 按段落渲染：前文 → 选项行/输入框 → 后文（选项文本不再在正文里重复） -->
         <template v-for="(seg, i) in segments" :key="i">
-          <div v-html="formatReceiptMd(seg.md)"></div>
-          <div v-if="seg.choices && showChoices" class="msg-choices" role="group" :aria-label="`问题${seg.qno}选项`">
-            <span class="choice-qno">{{ seg.qno }}</span>
+          <div v-if="seg.pre.trim()" v-html="formatReceiptMd(seg.pre)"></div>
+          <div v-if="seg.choices && seg.choices.length && showChoices" class="msg-choices" role="group" :aria-label="`问题${seg.qno}选项`">
             <button
-              v-for="opt in seg.choices"
-              :key="opt.value"
-              class="choice-chip"
+              v-for="(opt, oi) in seg.choices"
+              :key="oi"
+              class="choice-row"
               :class="{ selected: selected[seg.qno] === opt.value }"
-              :title="opt.value"
               @click="toggleChoice(seg.qno, opt.value)"
-            >{{ opt.label }}</button>
+            >
+              <span class="choice-radio" aria-hidden="true"></span>
+              <span class="choice-text">{{ opt.value }}</span>
+            </button>
           </div>
           <!-- 开放问题：行内输入框直接作答 -->
           <div v-if="seg.open && showChoices" class="msg-open-answer">
-            <span class="choice-qno">{{ seg.qno }}</span>
             <input
               class="open-input"
               :value="openDrafts[seg.qno] || ''"
@@ -225,6 +225,7 @@ async function doPin() {
               @keydown.enter="confirmChoices"
             />
           </div>
+          <div v-if="seg.post.trim()" v-html="formatReceiptMd(seg.post)"></div>
         </template>
         <div v-if="showChoices && answerableSegs.length" class="msg-choices-bar">
           <span class="choices-progress">已答 {{ answered }}/{{ answerableSegs.length }}</span>
@@ -273,50 +274,55 @@ async function doPin() {
 </template>
 
 <style scoped>
-/* 可点击选项（Trae 式）：点选 → 确认 → 一次发送 */
+/* 可点选项：整行可选卡（完整文本 + 单选圆点），点选 → 确认 → 一次发送 */
 .msg-choices {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 6px;
 }
-.choice-qno {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--accent-light);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.choice-chip {
-  padding: 7px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-lighter);
+.choice-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   color: var(--text-primary);
   font-size: 12.5px;
+  line-height: 1.6;
   cursor: pointer;
-  transition: all 0.15s;
   font-family: inherit;
-  text-align: left;
-  max-width: 100%;
+  transition: border-color 0.15s, background 0.15s;
 }
-.choice-chip:hover {
+.choice-row:hover { border-color: var(--accent); }
+.choice-row.selected {
   border-color: var(--accent);
+  background: var(--accent-lighter);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
-.choice-chip.selected {
+.choice-radio {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-color);
+  transition: all 0.15s;
+}
+.choice-row.selected .choice-radio {
+  border-color: var(--accent);
   background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 0 0 3px var(--accent-light);
+  box-shadow: inset 0 0 0 3px var(--bg-card);
 }
+.choice-text {
+  flex: 1;
+  word-break: break-word;
+}
+
 .msg-choices-bar {
   display: flex;
   align-items: center;
@@ -333,7 +339,7 @@ async function doPin() {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 .open-input {
   flex: 1;
