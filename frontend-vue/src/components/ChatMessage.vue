@@ -65,7 +65,8 @@ function confirmChoices() {
   if (!store.currentConversationId || answered.value === 0) return
   const lines = answerableSegs.value
     .filter(s => selected.value[s.qno] || (openDrafts.value[s.qno] || '').trim())
-    .map(s => `${s.qno}. ${selected.value[s.qno] || (openDrafts.value[s.qno] || '').trim()}`)
+    // 输入的自定义答案优先于点选（打字是更明确的意图）
+    .map(s => `${s.qno}. ${(openDrafts.value[s.qno] || '').trim() || selected.value[s.qno]}`)
   choicesPicked.value = true
   store.sendMessage(store.currentConversationId, lines.join('\n'))
 }
@@ -215,12 +216,12 @@ async function doPin() {
               <span class="choice-text">{{ opt.value }}</span>
             </button>
           </div>
-          <!-- 开放问题：行内输入框直接作答 -->
-          <div v-if="seg.open && showChoices" class="msg-open-answer">
+          <!-- 每个问题都可以不选选项、直接输入自定义答案 -->
+          <div v-if="(seg.choices || seg.open) && showChoices" class="msg-open-answer">
             <input
               class="open-input"
               :value="openDrafts[seg.qno] || ''"
-              placeholder="直接回答这个问题（回车即连同其他所选一起发送）"
+              :placeholder="seg.choices ? '其他（不选上面的，直接输入你的答案）' : '直接回答这个问题（回车即连同其他所选一起发送）'"
               @input="openDrafts = { ...openDrafts, [seg.qno]: ($event.target as HTMLInputElement).value }"
               @keydown.enter="confirmChoices"
             />
