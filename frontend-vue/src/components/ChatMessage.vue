@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import type { Message, WorkspaceItemType } from '../types'
-import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, parseChoiceOptions, formatTime, charCount, pointPersonaName } from '../utils/format'
+import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, splitMessageWithChoices, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
 import { Trash2 } from 'lucide-vue-next'
 import ThinkingBlock from './ThinkingBlock.vue'
@@ -34,19 +34,36 @@ const timeText = computed(() => formatTime(m.value.created_at))
 const countText = computed(() => charCount(m.value.content))
 const showCount = computed(() => !isUser.value && m.value.content.length > 50)
 
-// 可点击选项：只在该消息是最后一条 AI 回复、非生成中时出现；点过一次即收起
+// 可点击选项：按问题分组挂在各自段落下；点选→确认→一次发送（Trae 式两段交互）
 const choicesPicked = ref(false)
-const choices = computed(() =>
-  props.isLastAssistant && !props.isStreaming && !isUser.value
-    ? parseChoiceOptions(m.value.content)
-    : [],
-)
-const showChoices = computed(() => !choicesPicked.value && choices.value.length >= 2)
+const selected = ref<Record<number, string>>({}) // qno → 选项 value
 
-function pickChoice(value: string) {
-  if (!store.currentConversationId) return
+const segments = computed(() => {
+  if (isUser.value || !props.isLastAssistant || props.isStreaming) return []
+  return splitMessageWithChoices(m.value.content)
+})
+const choiceSegs = computed(() => segments.value.filter(s => s.choices))
+const answered = computed(() => Object.keys(selected.value).length)
+const showChoices = computed(() => !choicesPicked.value && choiceSegs.value.length > 0)
+
+function toggleChoice(qno: number, value: string) {
+  if (selected.value[qno] === value) delete selected.value[qno]
+  else selected.value[qno] = value
+  // 触发响应式替换
+  selected.value = { ...selected.value }
+}
+
+function resetChoices() {
+  selected.value = {}
+}
+
+function confirmChoices() {
+  if (!store.currentConversationId || answered.value === 0) return
+  const lines = choiceSegs.value
+    .filter(s => selected.value[s.qno])
+    .map(s => `${s.qno}. ${selected.value[s.qno]}`)
   choicesPicked.value = true
-  store.sendMessage(store.currentConversationId, value)
+  store.sendMessage(store.currentConversationId, lines.join('\n'))
 }
 
 const copied = ref(false)
@@ -178,16 +195,32 @@ async function doPin() {
     <div class="msg-content markdown-body">
       <ThinkingBlock v-if="!isUser && m.thinking" :text="m.thinking" :streaming="false" />
       <div v-if="isUser" v-html="userHtml"></div>
-      <div v-else v-html="assistantHtml"></div>
-      <!-- 可点击选项（仅最后一条 AI 消息且非生成中）：Trae 式选择，点即发送 -->
-      <div v-if="!isUser && showChoices" class="msg-choices" role="group" aria-label="点选回复">
-        <button
-          v-for="opt in choices"
-          :key="opt.value"
-          class="choice-chip"
-          @click="pickChoice(opt.value)"
-        >{{ opt.label }}</button>
-      </div>
+      <template v-else>
+        <!-- 按段落渲染，有选项的问题段落后面紧跟自己的选项组 -->
+        <template v-for="(seg, i) in segments" :key="i">
+          <div v-html="formatReceiptMd(seg.md)"></div>
+          <div v-if="seg.choices && showChoices" class="msg-choices" role="group" :aria-label="`问题${seg.qno}选项`">
+            <span class="choice-qno">{{ seg.qno }}</span>
+            <button
+              v-for="opt in seg.choices"
+              :key="opt.value"
+              class="choice-chip"
+              :class="{ selected: selected[seg.qno] === opt.value }"
+              :title="opt.value"
+              @click="toggleChoice(seg.qno, opt.value)"
+            >{{ opt.label }}</button>
+          </div>
+        </template>
+        <div v-if="showChoices && choiceSegs.length" class="msg-choices-bar">
+          <span class="choices-progress">已选 {{ answered }}/{{ choiceSegs.length }}</span>
+          <span class="choices-flex"></span>
+          <button v-if="answered" class="btn btn-sm" @click="resetChoices">重置</button>
+          <button class="btn btn-sm btn-primary" :disabled="!answered" @click="confirmChoices">
+            {{ answered ? `发送所选（${answered}）` : '点上方选项作答' }}
+          </button>
+        </div>
+        <div v-if="!segments.length" v-html="assistantHtml"></div>
+      </template>
       <span v-if="isUser && timeText" class="msg-time msg-time-user">{{ timeText }}</span>
     </div>
     <div v-if="!isUser" class="msg-actions">
@@ -225,12 +258,26 @@ async function doPin() {
 </template>
 
 <style scoped>
-/* 可点击选项（Trae 式）：点即发送 */
+/* 可点击选项（Trae 式）：点选 → 确认 → 一次发送 */
 .msg-choices {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin-top: 10px;
+}
+.choice-qno {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .choice-chip {
   padding: 7px 14px;
@@ -246,8 +293,23 @@ async function doPin() {
   max-width: 100%;
 }
 .choice-chip:hover {
+  border-color: var(--accent);
+}
+.choice-chip.selected {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+  font-weight: 600;
+  box-shadow: 0 0 0 3px var(--accent-light);
 }
+.msg-choices-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color);
+}
+.choices-progress { font-size: 12px; color: var(--text-tertiary); }
+.choices-flex { flex: 1; }
 </style>

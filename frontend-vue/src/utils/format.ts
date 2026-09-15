@@ -235,17 +235,82 @@ const _OPT_MARKERS: RegExp[] = [
 const _QUESTION_CUE_RE = /[？?]|选哪|挑哪|哪个|哪条|倾向|你选|来选|定哪个/
 
 export function parseChoiceOptions(text: string | null | undefined): ChoiceOption[] {
-  if (!text) return []
-  const lines = text.trim().split('\n')
-  // 找末尾最后一个非空行（提问通常在最后）
-  let lastIdx = lines.length - 1
-  while (lastIdx >= 0 && !lines[lastIdx].trim()) lastIdx--
-  if (lastIdx < 0) return []
+  const first = splitMessageWithChoices(text).find(s => s.choices)
+  return first ? first.choices! : []
+}
 
-  const lineMode = _parseLineOptions(lines, lastIdx)
-  if (lineMode.length) return lineMode
-  // 行内模式：LLM 常把 A./B./C. 挤在同一段话里（尤其模板被自定义、无分行约定时）
-  return _parseInlineOptions(text)
+// ---- 按问题分组的选项（每个有选项的段落一组，Trae 式点选+确认）----
+export interface MessageSegment {
+  md: string
+  choices: ChoiceOption[] | null
+  qno: number // 有选项的段落依次编号（1、2…），发送时作为问题号
+}
+
+export function splitMessageWithChoices(text: string | null | undefined): MessageSegment[] {
+  if (!text) return []
+  // 按行切块：LLM 的连续问题常只用单个换行分隔（渲染层 breaks:false 会糊成一段）。
+  // 代码围栏内部保持合并；缩进行（嵌套列表/续行）并入上一块，避免拆散结构。
+  const lines = text.trim().split('\n')
+  const blocks: string[] = []
+  let inFence = false
+  for (const line of lines) {
+    const fence = /^\s*(```|~~~)/.test(line)
+    if (!inFence && line.trim() && !/^\s/.test(line)) {
+      blocks.push(line)
+    } else if (blocks.length) {
+      blocks[blocks.length - 1] += '\n' + line
+    } else if (line.trim()) {
+      blocks.push(line)
+    }
+    if (fence) inFence = !inFence
+  }
+  const segs: MessageSegment[] = []
+  let qno = 0
+  for (const b of blocks) {
+    if (!b.trim()) continue
+    const choices = _optionsForBlock(b)
+    if (choices) qno++
+    segs.push({ md: b, choices, qno: choices ? qno : 0 })
+  }
+  return segs
+}
+
+function _optionsForBlock(block: string): ChoiceOption[] | null {
+  if (!_QUESTION_CUE_RE.test(block)) return null
+  // 1) 每行一个选项（A./①/1.）
+  const lineOpts = _parseLineOptions(block.split('\n'), block.split('\n').length - 1)
+  if (lineOpts.length) return lineOpts
+  // 2) 行内挤在一起的编号选项
+  const inlineOpts = _parseInlineOptions(block)
+  if (inlineOpts.length) return inlineOpts
+  // 3) 「是X，还是Y？」式二选一
+  const binary = _parseBinaryChoice(block)
+  return binary.length ? binary : null
+}
+
+// 「…是X，还是Y？」→ 两个可点选项。逐句扫描（一个块里可能有多个问句，
+// 如"…知道吗？…是X还是Y？"），句内恰好一个「还是」才判，防误伤。
+function _parseBinaryChoice(block: string): ChoiceOption[] {
+  const sentences = block.split(/(?<=[。！？；\n])/)
+  for (const s of sentences) {
+    const qIdx = s.indexOf('？')
+    if (qIdx < 0) continue
+    const q = s.slice(0, qIdx)
+    if ((q.match(/还是/g) || []).length !== 1) continue
+    const hIdx = q.indexOf('还是')
+    const isIdx = q.lastIndexOf('是', hIdx)
+    if (isIdx < 0 || q.slice(isIdx, isIdx + 2) === '还是') continue
+    // 尾部只去引号/逗号，不去括号——选项常以完整的（）结尾，去掉会不成对
+    const strip = (x: string) => x.replace(/^[，,、「'"“（(]+/, '').replace(/[，,、」'""]+$/, '').trim()
+    const a1 = strip(q.slice(isIdx + 1, hIdx))
+    const a2 = strip(q.slice(hIdx + 2))
+    if (a1.length < 2 || a2.length < 2 || a1.length > 60 || a2.length > 60) continue
+    return [
+      { label: _clip(a1, 16), value: a1 },
+      { label: _clip(a2, 16), value: a2 },
+    ]
+  }
+  return []
 }
 
 function _parseLineOptions(lines: string[], lastIdx: number): ChoiceOption[] {
