@@ -2,32 +2,41 @@
 # ============================================================================
 # Fiction Academy 一键更新 VPS（本机执行，非服务器上执行）
 #
-#   bash scripts/deploy-vps.sh
-#   VPS_PW=xxx bash scripts/deploy-vps.sh    # 密码走环境变量，否则交互输入
+#   bash scripts/deploy-vps.sh            # 只发代码（不动服务器数据）
+#   bash scripts/deploy-vps.sh --data     # 代码 + 本机数据库覆盖服务器（危险，慎用）
+#   VPS_PW=xxx bash scripts/deploy-vps.sh  # 密码走环境变量，否则交互输入
 #
-# 做了什么：本地 build 前端 → 打包 后端+dist+数据库+characters → 上传
+# 做了什么：本地 build 前端 → 打包 后端+dist+characters → 上传
 # /opt/fiction-academy 解包 → 重启 systemd 服务 → 版本自检。
 # 不动 nginx/systemd 配置；基础设施变更需 SSH 上服务器跑 scripts/deploy-server.sh。
 #
-# 注意：打包包含 data/fiction_academy.db，会覆盖服务器上的数据库（本机为准）。
+# 数据方向（重要）：用户在网页版创作，服务器库是活数据——默认部署绝不覆盖它；
+# 数据库迁移随服务重启在服务器上自动执行。要把本机数据推上去必须显式 --data。
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "→ 部署前先备份线上数据（防数据库覆盖/误操作事故）"
+echo "→ 部署前先备份线上数据（防误操作事故）"
 python scripts/backup_vps.py || echo "  （备份失败不阻塞部署，查看 backups/backup.log）"
 
 VPS_IP="${VPS_IP:-YOUR_VPS_IP}"
 VPS_USER="${VPS_USER:-root}"
 APP_DIR="${APP_DIR:-/opt/fiction-academy}"
+WITH_DATA="${1:-}"
 
 echo "→ 本地构建前端"
 (cd frontend-vue && npm run build --silent >/dev/null 2>&1 || npm run build >/dev/null)
 
 GIT_SHA=$(git rev-parse --short HEAD)
 echo "$GIT_SHA $(date +%F\ %T)" > backend/DEPLOY_VERSION
-tar czf ./.deploy-fa.tar.gz --exclude='__pycache__' --exclude='backend.log' \
-  backend characters frontend-vue/dist scripts data/fiction_academy.db
+if [ "$WITH_DATA" = "--data" ]; then
+  echo "→ ⚠️  --data：本机数据库将覆盖服务器（服务器上的新对话会丢失！）"
+  tar czf ./.deploy-fa.tar.gz --exclude='__pycache__' --exclude='backend.log' \
+    backend characters frontend-vue/dist scripts data/fiction_academy.db
+else
+  tar czf ./.deploy-fa.tar.gz --exclude='__pycache__' --exclude='backend.log' \
+    backend characters frontend-vue/dist scripts
+fi
 
 echo "→ 上传到 $VPS_IP 并部署（版本 $GIT_SHA）"
 # MSYS_NO_PATHCONV：Git Bash 会把「VAR=/opt/...」前缀env 误转成 C:/Program Files/Git/opt/...

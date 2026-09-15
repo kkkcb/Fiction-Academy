@@ -361,6 +361,11 @@ CREATE TABLE IF NOT EXISTS materials (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_history_key ON prompt_history(key, id DESC);"""),
+    (18, "reformat_distill_receipt_messages",
+     # 旧分拣回执是「段内单换行」拼接，前端 breaks:false 全折叠成一行；
+     # 重排成 Markdown 列表。「✅【」模式只出现在分拣回执，REPLACE 幂等（改完不再匹配）
+     """UPDATE messages SET content = REPLACE(content, char(10) || '✅【', char(10) || char(10) || '- ✅【')
+        WHERE content LIKE '%✅【%'"""),
 ]
 
 _db: aiosqlite.Connection | None = None

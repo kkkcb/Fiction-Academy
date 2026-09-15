@@ -281,7 +281,11 @@ async def studio_distill(project_id: str):
     leftover = (result.get("leftover") or "").strip()
 
     if applied:
-        lines = ["✅【" + a["label"] + "】" + (a["note"] or (str(a["chars"]) + " 字")) for a in applied]
+        # Markdown 列表渲染（marked breaks:false 会把段内单换行折叠成空格，必须用列表/空行分段）
+        lines = [
+            "- ✅ **【" + a["label"] + "】**" + (a["note"] or (str(a["chars"]) + " 字"))
+            for a in applied
+        ]
         text = "已把本轮讨论分拣进设定：\n\n" + "\n".join(lines)
     else:
         text = "本轮对话没有需要沉淀的新设定（寒暄和重复内容已忽略）。"

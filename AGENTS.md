@@ -11,7 +11,8 @@
    - `cd frontend-vue && npm run build`（失败不提交）
    - `python scripts/regression.py`（需本地后端已启动）
 3. **提交推送**：全部改动 commit + push 到 origin main；服务器不会自动同步，需手动
-   `bash scripts/deploy-vps.sh` 更新线上（含数据库覆盖，本机为准）。
+   `bash scripts/deploy-vps.sh` 更新线上（默认**只发代码不动服务器数据**——用户在网页版创作，
+   服务器库是活数据、为准；要本机数据覆盖服务器必须显式 `--data`，慎用）。
 
 ## 环境备忘
 
