@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import type { Message, WorkspaceItemType } from '../types'
-import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, formatTime, charCount, pointPersonaName } from '../utils/format'
+import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, parseChoiceOptions, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
 import { Trash2 } from 'lucide-vue-next'
 import ThinkingBlock from './ThinkingBlock.vue'
@@ -33,6 +33,21 @@ const assistantHtml = computed(() => formatReceiptMd(m.value.content))
 const timeText = computed(() => formatTime(m.value.created_at))
 const countText = computed(() => charCount(m.value.content))
 const showCount = computed(() => !isUser.value && m.value.content.length > 50)
+
+// 可点击选项：只在该消息是最后一条 AI 回复、非生成中时出现；点过一次即收起
+const choicesPicked = ref(false)
+const choices = computed(() =>
+  props.isLastAssistant && !props.isStreaming && !isUser.value
+    ? parseChoiceOptions(m.value.content)
+    : [],
+)
+const showChoices = computed(() => !choicesPicked.value && choices.value.length >= 2)
+
+function pickChoice(value: string) {
+  if (!store.currentConversationId) return
+  choicesPicked.value = true
+  store.sendMessage(store.currentConversationId, value)
+}
 
 const copied = ref(false)
 let copyTimer: ReturnType<typeof setTimeout> | null = null
@@ -164,6 +179,15 @@ async function doPin() {
       <ThinkingBlock v-if="!isUser && m.thinking" :text="m.thinking" :streaming="false" />
       <div v-if="isUser" v-html="userHtml"></div>
       <div v-else v-html="assistantHtml"></div>
+      <!-- 可点击选项（仅最后一条 AI 消息且非生成中）：Trae 式选择，点即发送 -->
+      <div v-if="!isUser && showChoices" class="msg-choices" role="group" aria-label="点选回复">
+        <button
+          v-for="opt in choices"
+          :key="opt.value"
+          class="choice-chip"
+          @click="pickChoice(opt.value)"
+        >{{ opt.label }}</button>
+      </div>
       <span v-if="isUser && timeText" class="msg-time msg-time-user">{{ timeText }}</span>
     </div>
     <div v-if="!isUser" class="msg-actions">
@@ -199,3 +223,31 @@ async function doPin() {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+/* 可点击选项（Trae 式）：点即发送 */
+.msg-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.choice-chip {
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-lighter);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  text-align: left;
+  max-width: 100%;
+}
+.choice-chip:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+</style>

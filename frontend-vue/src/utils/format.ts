@@ -217,6 +217,64 @@ export function formatReceiptMd(text: string | null | undefined): string {
   return formatMd(_normalizeReceipt(t))
 }
 
+// ---- 可点击选项（Trae 式选择交互）----
+// AI 消息末尾出现「选项列表 + 提问」时，解析成可点选项，点击即作为用户消息发送。
+// 识别的列表形态：A. / ① / 1. 各自成行（2-6 条，每条不太长），列表后（或列表前一句）
+// 有提问特征（？/吗/选/挑/倾向/哪个）。宁可漏判不可误判——普通设定列举不带提问就不出选项。
+export interface ChoiceOption {
+  label: string
+  value: string
+}
+
+const _OPT_MARKERS: RegExp[] = [
+  /^([A-H])[.、:：)）]\s*(\S.*)$/,        // A. 方向一
+  /^([\u2460-\u2467])[.、:：)）]?\s*(\S.*)$/, // ① 方向一
+  /^(\d)[.、:：)）]\s*(\S.*)$/,            // 1. 方向一
+]
+
+const _QUESTION_CUE_RE = /[？?]|选哪|挑哪|哪个|哪条|倾向|你选|来选|定哪个/
+
+export function parseChoiceOptions(text: string | null | undefined): ChoiceOption[] {
+  if (!text) return []
+  const lines = text.trim().split('\n')
+  // 找末尾最后一个非空行（提问通常在最后）
+  let lastIdx = lines.length - 1
+  while (lastIdx >= 0 && !lines[lastIdx].trim()) lastIdx--
+  if (lastIdx < 0) return []
+
+  for (const re of _OPT_MARKERS) {
+    // 从末尾往回收集同形态的选项行
+    let items: ChoiceOption[] = []
+    const tailIsOption = re.test(lines[lastIdx].trim())
+    let listEnd = tailIsOption ? lastIdx : lastIdx - 1
+    while (listEnd >= 0 && !lines[listEnd].trim()) listEnd--
+    let j = listEnd
+    while (j >= 0) {
+      const line = lines[j].trim()
+      if (!line) { j--; continue }
+      const m = line.match(re)
+      if (!m) break
+      const content = m[2].trim()
+      if (content.length > 60 || content.length === 0) break
+      items.unshift({ label: _clip(content, 18), value: line.replace(/^[*>\s]+/, '').trim() })
+      j--
+    }
+    if (items.length >= 2 && items.length <= 6) {
+      // 提问判定：列表后的剩余文本（提问行），或列表前一行
+      const after = lines.slice(listEnd + 1).join(' ')
+      const before = j >= 0 ? lines[j].trim() : ''
+      if (_QUESTION_CUE_RE.test(after) || _QUESTION_CUE_RE.test(before)) {
+        return items
+      }
+    }
+  }
+  return []
+}
+
+function _clip(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + '…' : s
+}
+
 function _fallbackMd(text: string): string {
   let h = esc(text)
   h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>')
