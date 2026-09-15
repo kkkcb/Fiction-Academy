@@ -242,6 +242,13 @@ export function parseChoiceOptions(text: string | null | undefined): ChoiceOptio
   while (lastIdx >= 0 && !lines[lastIdx].trim()) lastIdx--
   if (lastIdx < 0) return []
 
+  const lineMode = _parseLineOptions(lines, lastIdx)
+  if (lineMode.length) return lineMode
+  // 行内模式：LLM 常把 A./B./C. 挤在同一段话里（尤其模板被自定义、无分行约定时）
+  return _parseInlineOptions(text)
+}
+
+function _parseLineOptions(lines: string[], lastIdx: number): ChoiceOption[] {
   for (const re of _OPT_MARKERS) {
     // 从末尾往回收集同形态的选项行
     let items: ChoiceOption[] = []
@@ -270,6 +277,59 @@ export function parseChoiceOptions(text: string | null | undefined): ChoiceOptio
   }
   return []
 }
+
+// 行内选项：在同一段文字里找 A. … B. … C. …（或 ①…②…）的连续序列。
+// 要求字母序连续（A→B→C）、每项非空且 ≤100 字、整段有提问特征——防误伤普通行文。
+function _parseInlineOptions(text: string): ChoiceOption[] {
+  if (!_QUESTION_CUE_RE.test(text)) return []
+  const chunk = text.slice(-1600)
+  for (const markerRe of [_INLINE_LETTER_RE, _INLINE_CIRCLE_RE, _INLINE_DIGIT_RE]) {
+    // 三个正则都是「边界组 + 标记组」结构：内容从标记字母/数字起切
+    const marks: { idx: number; end: number; mark: string }[] = []
+    for (const m of chunk.matchAll(markerRe)) {
+      marks.push({ idx: m.index + m[1].length, end: m.index + m[0].length, mark: m[2] })
+    }
+    // 找最长的一段「编号递增」的连续 run（A→B→C…、①→②…、1→2…）
+    let best: { idx: number; end: number; mark: string }[] = []
+    let run: { idx: number; end: number; mark: string }[] = []
+    const order = (mk: string): number => {
+      const c = mk.charCodeAt(0)
+      if (c >= 0x2460 && c <= 0x2473) return c - 0x2460 + 1 // ①-⑳
+      return parseInt(mk, 10) || c - 64 // A=1..H=8；数字直接取值
+    }
+    for (let i = 0; i < marks.length; i++) {
+      if (run.length && order(marks[i].mark) === order(run[run.length - 1].mark) + 1) {
+        run.push(marks[i])
+      } else {
+        run = [marks[i]]
+      }
+      if (run.length > best.length) best = [...run]
+    }
+    if (best.length < 2 || best.length > 6) continue
+    const items: ChoiceOption[] = []
+    for (let i = 0; i < best.length; i++) {
+      const start = best[i].idx
+      let end: number
+      if (i + 1 < best.length) {
+        end = best[i + 1].idx
+      } else {
+        // 末选项：截到本段结束（后面可能还有别的问题段落，不是选项内容）
+        const nl = chunk.indexOf('\n', start)
+        end = nl >= 0 ? nl : chunk.length
+      }
+      const content = chunk.slice(start, end).trim().replace(/[。；;\s]+$/, '')
+      if (content.length > 100 || content.length <= 2) { items.length = 0; break }
+      items.push({ label: _clip(content, 18), value: content })
+    }
+    if (items.length >= 2) return items
+  }
+  return []
+}
+
+// 边界集：选项标记前的字符。注意 ？——「…是谁？A. …」是 LLM 最常见的行内接法
+const _INLINE_LETTER_RE = /(^|[\s？?：:；;，,（(“"])([A-H])[.、]\s*/g
+const _INLINE_CIRCLE_RE = /(^|[\s？?：:；;，,（(])([\u2460-\u2473])/g
+const _INLINE_DIGIT_RE = /(^|[\s？?：:；;，,（(])(\d)[.、]\s+/g
 
 function _clip(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + '…' : s
