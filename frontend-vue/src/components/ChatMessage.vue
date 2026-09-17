@@ -63,10 +63,11 @@ function resetChoices() {
 
 function confirmChoices() {
   if (!store.currentConversationId || answered.value === 0) return
+  // 不带问题序号：序号是 UI 内部对位用的，发给模型反而容易和它自己的行文编号对不上；
+  // 选项原文本身（含 A./是X还是Y 的措辞）已足够模型分辨对应哪个问题
   const lines = answerableSegs.value
     .filter(s => selected.value[s.qno] || (openDrafts.value[s.qno] || '').trim())
-    // 输入的自定义答案优先于点选（打字是更明确的意图）
-    .map(s => `${s.qno}. ${(openDrafts.value[s.qno] || '').trim() || selected.value[s.qno]}`)
+    .map(s => (openDrafts.value[s.qno] || '').trim() || selected.value[s.qno])
   choicesPicked.value = true
   store.sendMessage(store.currentConversationId, lines.join('\n'))
 }
