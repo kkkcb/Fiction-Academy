@@ -224,6 +224,16 @@ async def chat_json(messages: list[dict], system_prompt: str | None = None,
             logger.warning("[llm] chat_json parse/validate failed (attempt %d/%d): %s",
                            attempt + 1, LLM_MAX_RETRIES, str(e)[:200])
             if attempt < LLM_MAX_RETRIES - 1:
+                # 带反馈重试（CrewAI guardrail 模式）：把错误原因和坏输出喂回去，
+                # 而不是原样重发——确定性的格式错误原样重发只会原样重犯
+                full_messages = full_messages + [
+                    {"role": "assistant", "content": (content or "")[:2000]},
+                    {"role": "user", "content": (
+                        f"你上次的输出无法解析：{str(e)[:200]}。"
+                        "请重新输出——只输出一个合法 JSON 对象，"
+                        "不要任何解释、markdown 代码围栏或 JSON 以外的文本。"
+                    )},
+                ]
                 await asyncio.sleep(2 ** attempt)
         except Exception as e:
             last_err = e

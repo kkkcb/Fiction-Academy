@@ -61,3 +61,34 @@ async def test_chat_json_raises_when_always_truncated(monkeypatch):
     with pytest.raises(LLMJSONError):
         await chat_json([{"role": "user", "content": "x"}])
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_json_retry_feeds_error_back(monkeypatch):
+    """解析失败重试必须带错误反馈（CrewAI guardrail 模式），而不是原样重发。"""
+    bad = _resp("这不是JSON，只是普通文本", "stop")
+    good = _resp(json.dumps({"summary": "修复后结果"}), "stop")
+    seen: list[list[dict]] = []
+
+    class Completions:
+        async def create(self, **kwargs):
+            seen.append(kwargs["messages"])
+            return [bad, good][len(seen) - 1]
+
+    class Chat:
+        completions = Completions()
+
+    class Client:
+        chat = Chat()
+
+    monkeypatch.setattr(base, "_get_client", lambda: Client())
+    monkeypatch.setattr(base, "LLM_MAX_RETRIES", 2)
+
+    result = await chat_json([{"role": "user", "content": "x"}])
+    assert result == {"summary": "修复后结果"}
+    assert len(seen) == 2
+    # 第二次请求里带着第一次的坏输出 + 错误反馈
+    assert seen[1][-2]["role"] == "assistant"
+    assert seen[1][-2]["content"] == "这不是JSON，只是普通文本"
+    assert seen[1][-1]["role"] == "user"
+    assert "无法解析" in seen[1][-1]["content"]
