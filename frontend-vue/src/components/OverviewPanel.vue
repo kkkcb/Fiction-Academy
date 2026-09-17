@@ -9,7 +9,7 @@ import KgGraphPanel from './KgGraphPanel.vue'
 import GoalPanel from './GoalPanel.vue'
 
 const store = useAppStore()
-const { currentProjectId, currentProject, workspaceItems, chronicle, goalState, lintResult, lintLoading } = storeToRefs(store)
+const { currentProjectId, currentProject, workspaceItems, chronicle, goalState, lintResult, lintLoading, distillDigest } = storeToRefs(store)
 
 const viewMode = ref<'overview' | 'graph' | 'goal'>('overview')
 
@@ -225,6 +225,29 @@ const lintScore = computed(() => {
         </template>
       </div>
 
+      <!-- 分拣摘要：待取舍的冲突 + 最近一批取舍结果（/distill 人工核对链路） -->
+      <div v-if="distillDigest && (distillDigest.pending_count || distillDigest.latest_resolved.length)" class="rules-card distill-digest">
+        <div class="rules-card-header">
+          <span class="rules-card-title">分拣核对</span>
+          <span v-if="distillDigest.pending_count" class="rules-priority-badge pending">待取舍 {{ distillDigest.pending_count }}</span>
+        </div>
+        <div v-if="distillDigest.pending_count" class="digest-list">
+          <div v-for="p in distillDigest.pending" :key="p.id" class="digest-row pending">
+            <span class="digest-point">{{ p.label }}</span>
+            <span class="digest-text">{{ p.new_summary }}</span>
+          </div>
+          <div class="digest-hint">在对话里的核对卡片上取舍</div>
+        </div>
+        <div v-if="distillDigest.latest_resolved.length" class="digest-list">
+          <div class="digest-subtitle">最近取舍（{{ distillDigest.latest_resolved_at?.slice(5, 16) }}）</div>
+          <div v-for="r in distillDigest.latest_resolved" :key="r.id" class="digest-row">
+            <span class="digest-point">{{ r.label }}</span>
+            <span class="digest-decision" :class="r.decision">{{ { old: '保留旧', new: '用新', custom: '融合' }[r.decision] || r.decision }}</span>
+            <span class="digest-text">{{ r.decision === 'old' ? r.old_summary : r.new_summary }}</span>
+          </div>
+        </div>
+      </div>
+
       <div class="lint-card">
         <div class="lint-card-header">
           <span class="lint-card-title">一致性检测</span>
@@ -380,6 +403,17 @@ const lintScore = computed(() => {
 </template>
 
 <style scoped>
+/* 分拣核对摘要块 */
+.distill-digest { border-color: var(--accent-border); }
+.digest-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.digest-subtitle { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; }
+.digest-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+.digest-row.pending .digest-text { color: var(--accent); }
+.digest-point { flex: none; font-size: 11px; color: var(--text-secondary); background: var(--bg-secondary); border-radius: var(--radius-full); padding: 1px 8px; }
+.digest-decision { flex: none; font-size: 11px; color: var(--text-tertiary); }
+.digest-decision.new, .digest-decision.custom { color: var(--accent); }
+.digest-text { flex: 1; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.digest-hint { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
 .ov-card-content {
   word-break: break-word;
   font-size: 12px;

@@ -189,6 +189,21 @@ CREATE TABLE IF NOT EXISTS prompt_history (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS distill_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    point TEXT NOT NULL,
+    old_summary TEXT DEFAULT '',
+    new_summary TEXT DEFAULT '',
+    suggestion TEXT DEFAULT '',
+    new_content TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    decision TEXT DEFAULT '',
+    final_content TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    resolved_at TEXT DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -366,6 +381,21 @@ CREATE INDEX IF NOT EXISTS idx_prompt_history_key ON prompt_history(key, id DESC
      # 重排成 Markdown 列表。「✅【」模式只出现在分拣回执，REPLACE 幂等（改完不再匹配）
      """UPDATE messages SET content = REPLACE(content, char(10) || '✅【', char(10) || char(10) || '- ✅【')
         WHERE content LIKE '%✅【%'"""),
+    (19, "add_distill_conflicts",
+     """CREATE TABLE IF NOT EXISTS distill_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    point TEXT NOT NULL,
+    old_summary TEXT DEFAULT '',
+    new_summary TEXT DEFAULT '',
+    suggestion TEXT DEFAULT '',
+    new_content TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    decision TEXT DEFAULT '',
+    final_content TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    resolved_at TEXT DEFAULT ''
+)"""),
 ]
 
 _db: aiosqlite.Connection | None = None

@@ -13,6 +13,7 @@ from backend.agents.personas import POINT_PERSONAS
 from backend.config import CHAT_HISTORY_LIMIT, SYSTEM_PROMPT
 from backend.services import repo
 from backend.services.context_builder import ContextRequest, build_chat_context
+from backend.agents.guide import POINT_LABELS
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -184,7 +185,6 @@ async def studio_distill(project_id: str):
     """总结创作对话的新增内容，自动分拣归入对应点位（增量：只处理上次分拣后的新消息）。"""
     import uuid as _uuid
     from backend.agents.base import chat_json
-    from backend.agents.guide import POINT_LABELS
     from backend.services import repo as _repo
 
     db = await get_db()
@@ -235,13 +235,20 @@ async def studio_distill(project_id: str):
         "## 本轮新对话\n" + new_text[:9000] + "\n\n"
         "## 分拣规则\n"
         "1. 找出新对话里值得沉淀的信息：人物设定、世界观/力量体系、情节走向、伏笔、大纲调整、故事核修正\n"
-        "2. 对每个有新信息的点位输出【合并后的完整内容】：现有内容 + 新信息有机融合成一个连贯版本，不是简单拼接；没有新信息的点位不要输出\n"
-        "3. 新信息与现有内容**冲突**（推翻或修正旧设定）时，note 必须写明「修正：旧X → 新Y」——不要静默覆盖，作者要看清变更脉络\n"
+        "2. 与现有内容**不冲突**的补充/新增 → 放 updates：输出【合并后的完整内容】"
+        "（现有内容 + 新信息有机融合成一个连贯版本，不是简单拼接）；没有新信息的点位不要输出\n"
+        "3. 新讨论与现有内容**冲突/矛盾**（推翻、修正旧设定，或两版本只能二选一）→ 放 conflicts，不要自行合并：\n"
+        "   - old_summary：现有设定的关键说法（一两句）\n"
+        "   - new_summary：本轮讨论的新说法（一两句）\n"
+        "   - suggestion：你的融合建议（没有就空字符串）\n"
+        "   - new_content：若采用新说法，该点位合并后的完整内容\n"
         "4. 寒暄、重复、纯讨论过程不沉淀\n"
         "5. leftover 放无法归类但以后可能有用的备忘（被否决的方案、待续话题等），"
         "多条时用 Markdown 列表分行（每条一行，可用 ①②③ 编号），没有就空字符串\n\n"
         '输出 JSON：{"updates": [{"point": "world_setting", "note": "本次融合了什么", '
-        '"content": "该点位合并后的完整内容"}], "leftover": ""}'
+        '"content": "该点位合并后的完整内容"}], "conflicts": [{"point": "story_core", '
+        '"old_summary": "...", "new_summary": "...", "suggestion": "...", '
+        '"new_content": "采用新说法时的完整内容"}], "leftover": ""}'
     )
     result = await chat_json(
         messages=[{"role": "user", "content": prompt}],
@@ -282,6 +289,36 @@ async def studio_distill(project_id: str):
                         "note": note, "chars": len(content)})
     leftover = (result.get("leftover") or "").strip()
 
+    # 冲突不自动合并：入库待人工取舍（现有内容仍保留在点位上）
+    conflict_rows = []
+    conflicts_raw = result.get("conflicts") or []
+    if isinstance(conflicts_raw, list):
+        for c in conflicts_raw[:6]:
+            if not isinstance(c, dict):
+                continue
+            pt = c.get("point")
+            if pt not in distill_points or pt not in existing:
+                continue
+            old_s = (c.get("old_summary") or "").strip()
+            new_s = (c.get("new_summary") or "").strip()
+            if not old_s or not new_s:
+                continue
+            new_content = (c.get("new_content") or "").strip() or (existing[pt]["content"] or "")
+            cur = await db.execute(
+                "INSERT INTO distill_conflicts (project_id, point, old_summary, new_summary, suggestion, new_content) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (project_id, pt, old_s[:400], new_s[:400],
+                 (c.get("suggestion") or "").strip()[:400], new_content),
+            )
+            conflict_rows.append({
+                "id": cur.lastrowid,
+                "point": pt,
+                "label": POINT_LABELS.get(pt, pt),
+                "old_summary": old_s[:200],
+                "new_summary": new_s[:200],
+                "suggestion": (c.get("suggestion") or "").strip()[:200],
+            })
+
     if applied:
         # Markdown 列表渲染（marked breaks:false 会把段内单换行折叠成空格，必须用列表/空行分段）
         lines = [
@@ -291,9 +328,20 @@ async def studio_distill(project_id: str):
         text = "已把本轮讨论分拣进设定：\n\n" + "\n".join(lines)
     else:
         text = "本轮对话没有需要沉淀的新设定（寒暄和重复内容已忽略）。"
+    if conflict_rows:
+        text += f"\n\n另有 **{len(conflict_rows)} 处与现有设定冲突**，等你核对取舍（见下方卡片）。"
     if leftover:
         text += "\n\n📝 备忘（暂无归属）：" + leftover[:200]
     await _repo.save_message(db, conv["id"], "assistant", text)
+
+    # 冲突审阅卡片（结构化消息，前端渲染成可点取舍的卡片，取舍结果进右侧总览）
+    if conflict_rows:
+        card = json.dumps({
+            "kind": "distill_review",
+            "total_merged": len(applied),
+            "conflicts": conflict_rows,
+        }, ensure_ascii=False)
+        await _repo.save_message(db, conv["id"], "assistant", card)
 
     # 水位推进到汇报消息之后，本轮内容和汇报本身都不会进下一批
     cursor = await db.execute(
@@ -307,6 +355,119 @@ async def studio_distill(project_id: str):
     )
     await db.commit()
     return {"ok": True, "applied": applied, "leftover": leftover, "message": text}
+
+
+class DistillResolveBody(BaseModel):
+    """distill 冲突的人工取舍。decision: old=保留现有 / new=用新说法 / custom=手动融合"""
+    choices: list[dict] = []
+
+
+def _conflict_digest_rows(rows: list) -> list[dict]:
+    return [{
+        "id": r["id"],
+        "point": r["point"],
+        "label": POINT_LABELS.get(r["point"], r["point"]),
+        "decision": r["decision"],
+        "old_summary": r["old_summary"],
+        "new_summary": r["new_summary"],
+        "status": r["status"],
+        "resolved_at": r["resolved_at"],
+    } for r in rows]
+
+
+@router.post("/projects/{project_id}/distill-conflicts/resolve")
+async def resolve_distill_conflicts(project_id: str, body: DistillResolveBody):
+    """人工取舍 distill 冲突：写回对应点位、标记已决、总结消息进对话 + 总览摘要。"""
+    from backend.services import repo as _repo
+
+    db = await get_db()
+    pending = await fetch_all(
+        db, "SELECT * FROM distill_conflicts WHERE project_id = ? AND status = 'pending'", (project_id,))
+    by_id = {r["id"]: r for r in pending}
+    if not by_id:
+        raise HTTPException(status_code=404, detail="没有待取舍的冲突")
+
+    ws_rows = await fetch_all(
+        db, "SELECT id, item_type FROM workspace_items WHERE project_id = ?", (project_id,))
+    ws_by_point = {r["item_type"]: r["id"] for r in ws_rows}
+
+    resolved_log = []
+    for ch in (body.choices or []):
+        try:
+            cid = int(ch.get("id"))
+        except (TypeError, ValueError):
+            continue
+        row = by_id.get(cid)
+        if not row:
+            continue
+        decision = ch.get("decision") if ch.get("decision") in ("old", "new", "custom") else "old"
+        if decision == "old":
+            final = None  # 保留现有内容，不动点位
+        elif decision == "new":
+            final = row["new_content"]
+        else:
+            final = (ch.get("custom_text") or "").strip()
+            if len(final) < 10:
+                continue  # 自定义内容无效视为未处理
+        if final is not None:
+            if row["point"] in ws_by_point:
+                await db.execute(
+                    "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+                    (final, ws_by_point[row["point"]]),
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO workspace_items (id, project_id, item_type, status, title, content, sort_order) "
+                    "VALUES (?, ?, ?, 'draft', ?, ?, 0)",
+                    (str(uuid.uuid4()), project_id, row["point"],
+                     POINT_LABELS.get(row["point"], row["point"]), final),
+                )
+        await db.execute(
+            "UPDATE distill_conflicts SET status = 'resolved', decision = ?, final_content = ?, "
+            "resolved_at = datetime('now') WHERE id = ?",
+            (decision, final or "", cid),
+        )
+        resolved_log.append({"row": row, "decision": decision})
+    await db.commit()
+
+    # 总结消息写入 studio 对话
+    conv = await fetch_one(
+        db, "SELECT id FROM conversations WHERE project_id = ? AND point = '__studio__'", (project_id,))
+    if conv and resolved_log:
+        dec_label = {"old": "保留旧设定", "new": "采用新说法", "custom": "手动融合"}
+        lines = [
+            f"- **{POINT_LABELS.get(r['row']['point'], r['row']['point'])}** — {dec_label[r['decision']]}："
+            f"{(r['row']['new_summary'] if r['decision'] != 'old' else r['row']['old_summary'])[:60]}"
+            for r in resolved_log
+        ]
+        text = f"分拣取舍完成（{len(resolved_log)} 处）：\n\n" + "\n".join(lines)
+        await _repo.save_message(db, conv["id"], "assistant", text)
+        await db.commit()
+    await _repo.touch_project(db, project_id)
+    return {"ok": True, "resolved": len(resolved_log)}
+
+
+@router.get("/projects/{project_id}/distill-conflicts/digest")
+async def distill_conflicts_digest(project_id: str):
+    """右侧总览的分拣摘要：待取舍数 + 最近一批已取舍记录。"""
+    db = await get_db()
+    pending = await fetch_all(
+        db, "SELECT * FROM distill_conflicts WHERE project_id = ? AND status = 'pending' "
+            "ORDER BY id DESC LIMIT 10", (project_id,))
+    latest = await fetch_one(
+        db, "SELECT resolved_at FROM distill_conflicts WHERE project_id = ? AND status = 'resolved' "
+            "ORDER BY resolved_at DESC, id DESC LIMIT 1", (project_id,))
+    resolved = []
+    if latest:
+        resolved = await fetch_all(
+            db, "SELECT * FROM distill_conflicts WHERE project_id = ? AND status = 'resolved' "
+                "AND resolved_at = ? ORDER BY id", (project_id, latest["resolved_at"]))
+    return {
+        "pending": _conflict_digest_rows(pending),
+        "pending_count": len(pending),
+        "latest_resolved": _conflict_digest_rows(resolved),
+        "latest_resolved_at": latest["resolved_at"] if latest else None,
+    }
 
 
 @router.post("/projects/{project_id}/studio/build")

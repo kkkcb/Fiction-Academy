@@ -1,6 +1,6 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { ConsultRecord, PointKey } from '../types'
+import type { ConsultRecord, PointKey, DistillReviewRecord } from '../types'
 
 marked.setOptions({ breaks: false, gfm: true })
 
@@ -159,6 +159,17 @@ export function parseConsultRecord(content: unknown): ConsultRecord | null {
   try {
     const obj = JSON.parse(t) as ConsultRecord
     if (obj && obj.kind === 'consult_record') return obj
+  } catch {}
+  return null
+}
+
+export function parseDistillReview(content: unknown): DistillReviewRecord | null {
+  if (typeof content !== 'string' || !content) return null
+  const t = content.trim()
+  if (t.charAt(0) !== '{') return null
+  try {
+    const obj = JSON.parse(t) as DistillReviewRecord
+    if (obj && obj.kind === 'distill_review' && Array.isArray(obj.conflicts)) return obj
   } catch {}
   return null
 }

@@ -29,6 +29,28 @@ export interface PromptHistoryItem {
   preview: string
 }
 
+export interface DistillConflictItem {
+  id: number
+  point: string
+  label: string
+  old_summary: string
+  new_summary: string
+  suggestion: string
+}
+
+export interface DistillReviewRecord {
+  kind: 'distill_review'
+  total_merged: number
+  conflicts: DistillConflictItem[]
+}
+
+export interface DistillDigest {
+  pending: DistillConflictItem[]
+  pending_count: number
+  latest_resolved: (DistillConflictItem & { decision: string; resolved_at: string })[]
+  latest_resolved_at: string | null
+}
+
 export interface PromptLibrary {
   total: number
   overridden: number

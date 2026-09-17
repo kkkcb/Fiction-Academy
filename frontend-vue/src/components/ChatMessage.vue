@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import type { Message, WorkspaceItemType } from '../types'
-import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, splitMessageWithChoices, formatTime, charCount, pointPersonaName } from '../utils/format'
+import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, parseDistillReview, splitMessageWithChoices, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
 import { Trash2 } from 'lucide-vue-next'
 import ThinkingBlock from './ThinkingBlock.vue'
 import ConsultFlow from './ConsultFlow.vue'
+import DistillReviewCard from './DistillReviewCard.vue'
 
 const props = withDefaults(defineProps<{ message: Message; index: number; isLastAssistant?: boolean; isStreaming?: boolean }>(), {
   isLastAssistant: false,
@@ -20,6 +21,7 @@ const store = useAppStore()
 const m = computed(() => props.message)
 const cmd = computed(() => m.value.role === 'user' ? parseCommand(m.value.content) : null)
 const record = computed(() => m.value.role === 'assistant' ? parseConsultRecord(m.value.content) : null)
+const review = computed(() => m.value.role === 'assistant' ? parseDistillReview(m.value.content) : null)
 const isUser = computed(() => m.value.role === 'user')
 const showRegenerate = computed(() => props.isLastAssistant && !props.isStreaming)
 
@@ -180,6 +182,13 @@ async function doPin() {
         <span class="command-label">{{ cmd.label }}</span>
       </div>
       <div class="command-body" v-html="formatContent(cmd.idea)"></div>
+    </div>
+  </div>
+
+  <div v-else-if="review" class="msg assistant msg-consult" @contextmenu="onContextMenu">
+    <div class="msg-role">设定分拣</div>
+    <div class="msg-content consult-flow">
+      <DistillReviewCard :record="review" :project-id="store.currentProjectId!" />
     </div>
   </div>
 

@@ -198,3 +198,71 @@ async def test_studio_distill_classifies_and_increments(client, project_id, llm_
 async def test_studio_distill_requires_conversation(client, project_id):
     resp = await client.post(f"/api/projects/{project_id}/studio/distill")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_studio_distill_conflicts_human_review_flow(client, project_id, llm_calls, monkeypatch):
+    """/distill 冲突链路：冲突不自动合并 → 审阅卡片消息 → 人工取舍 API → 写回点位 + 摘要。"""
+    ensure = await client.post(f"/api/projects/{project_id}/studio/ensure")
+    cid = ensure.json()["conversation_id"]
+    await _stream_chat(client, cid, content="聊聊力量体系：旧的是万物有灵，现在想改成规则森严的一物一律")
+
+    # 先造一份现有世界观（分拣的合并基底，也是冲突的"旧"）
+    await client.post(f"/api/projects/{project_id}/workspace", json={
+        "item_type": "world_setting", "title": "世界观",
+        "content": "力量体系：万物有灵，各凭物性修行，灵气如潮汐涨落。" + "背景。" * 5,
+        "status": "finalized",
+    })
+
+    async def fake_json(messages, system_prompt=None, temperature=0.3, **kw):
+        return {
+            "updates": [],
+            "conflicts": [{
+                "point": "world_setting",
+                "old_summary": "万物有灵，各凭物性",
+                "new_summary": "一物一律，规则森严",
+                "suggestion": "以一物一律为主干，保留灵气潮汐",
+                "new_content": "力量体系：一物一律，规则森严；灵气仍如潮汐涨落（保留自旧设定）。",
+            }],
+            "leftover": "",
+        }
+
+    import backend.agents.base as base_module
+    monkeypatch.setattr(base_module, "chat_json", fake_json)
+
+    resp = await client.post(f"/api/projects/{project_id}/studio/distill")
+    assert resp.status_code == 200, resp.text
+
+    # 冲突未自动合并：世界观内容保持旧版
+    items = (await client.get(f"/api/projects/{project_id}/workspace")).json()
+    ws = next(i for i in items if i["item_type"] == "world_setting")
+    assert "万物有灵" in ws["content"]
+
+    # 审阅卡片消息 + 汇报里提到冲突
+    msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()
+    cards = [m for m in msgs if m["content"].lstrip().startswith('{"kind": "distill_review"')
+             or m["content"].lstrip().startswith('{"kind":"distill_review"')]
+    assert cards, "审阅卡片消息未写入"
+    assert any("冲突" in m["content"] for m in msgs if m["role"] == "assistant")
+
+    # digest：待取舍 1
+    digest = (await client.get(f"/api/projects/{project_id}/distill-conflicts/digest")).json()
+    assert digest["pending_count"] == 1
+    conflict_id = digest["pending"][0]["id"]
+
+    # 人工取舍：用新的
+    r = await client.post(f"/api/projects/{project_id}/distill-conflicts/resolve", json={
+        "choices": [{"id": conflict_id, "decision": "new"}],
+    })
+    assert r.status_code == 200 and r.json()["resolved"] == 1
+
+    # 点位已按新说法更新；总结消息写入对话；digest 清零且带最近取舍
+    items2 = (await client.get(f"/api/projects/{project_id}/workspace")).json()
+    ws2 = next(i for i in items2 if i["item_type"] == "world_setting")
+    assert "一物一律" in ws2["content"]
+    msgs2 = (await client.get(f"/api/conversations/{cid}/messages")).json()
+    assert any("分拣取舍完成" in m["content"] for m in msgs2)
+    digest2 = (await client.get(f"/api/projects/{project_id}/distill-conflicts/digest")).json()
+    assert digest2["pending_count"] == 0
+    assert len(digest2["latest_resolved"]) == 1
+    assert digest2["latest_resolved"][0]["decision"] == "new"

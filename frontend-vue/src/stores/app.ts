@@ -13,6 +13,7 @@ import type {
   Assistant,
   AssistantInput,
   Chronicle,
+  DistillDigest,
   PointInfo,
   PointsData,
   ConsultRecord,
@@ -507,6 +508,18 @@ export const useAppStore = defineStore('app', () => {
       error.value = null
     } catch (e) {
       error.value = (e as Error).message
+    }
+    fetchDistillDigest(projectId).catch(() => {})
+  }
+
+  // ===== distill 分拣摘要（右侧总览：待取舍冲突 + 最近一批取舍结果）=====
+  const distillDigest = ref<DistillDigest | null>(null)
+
+  async function fetchDistillDigest(projectId: ID) {
+    try {
+      distillDigest.value = await api.getDistillDigest(projectId)
+    } catch {
+      distillDigest.value = null
     }
   }
 
@@ -1391,6 +1404,8 @@ export const useAppStore = defineStore('app', () => {
     regenerateMessage,
     stopStreaming,
     fetchWorkspaceItems,
+    distillDigest,
+    fetchDistillDigest,
     createWorkspaceItem,
     updateItemStatus,
     deleteWorkspaceItem,

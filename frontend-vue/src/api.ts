@@ -26,6 +26,7 @@ import type {
   Author,
   PromptLibrary,
   PromptHistoryItem,
+  DistillDigest,
 } from './types'
 
 const BASE = '/api'
@@ -119,6 +120,18 @@ export function resetPromptOverride(key: string): Promise<{ ok: boolean }> {
 
 export function getPromptHistory(key: string): Promise<{ items: PromptHistoryItem[] }> {
   return request<{ items: PromptHistoryItem[] }>('GET', `/prompts/${encodeURIComponent(key)}/history`)
+}
+
+export function resolveDistillConflicts(
+  projectId: ID,
+  choices: { id: number; decision: 'old' | 'new' | 'custom'; custom_text?: string }[],
+): Promise<{ ok: boolean; resolved: number }> {
+  return request<{ ok: boolean; resolved: number }>(
+    'POST', `/projects/${projectId}/distill-conflicts/resolve`, { choices })
+}
+
+export function getDistillDigest(projectId: ID): Promise<DistillDigest> {
+  return request<DistillDigest>('GET', `/projects/${projectId}/distill-conflicts/digest`)
 }
 
 export function createProject(data: { name: string; genre?: string; rules_text?: string; author_key?: string }): Promise<Project> {
