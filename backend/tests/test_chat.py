@@ -266,3 +266,60 @@ async def test_studio_distill_conflicts_human_review_flow(client, project_id, ll
     assert digest2["pending_count"] == 0
     assert len(digest2["latest_resolved"]) == 1
     assert digest2["latest_resolved"][0]["decision"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_pin_check_merge_and_conflict(client, project_id, llm_calls, monkeypatch):
+    """手动沉淀前与总览核对：无冲突自动合并；有冲突进人工取舍并写核对卡进对话。"""
+    ensure = await client.post(f"/api/projects/{project_id}/studio/ensure")
+    cid = ensure.json()["conversation_id"]
+    await client.post(f"/api/projects/{project_id}/workspace", json={
+        "item_type": "world_setting", "title": "世界观",
+        "content": "力量体系：万物有灵，各凭物性修行。", "status": "finalized",
+    })
+
+    # 1) 无冲突：自动合并进现有点位
+    async def fake_merge(messages, system_prompt=None, temperature=0.3, **kw):
+        return {"mode": "merge", "note": "补充了潮汐节律",
+                "merged_content": "力量体系：万物有灵，各凭物性修行；灵气如潮汐涨落。",
+                "conflicts": []}
+
+    import backend.agents.base as base_module
+    monkeypatch.setattr(base_module, "chat_json", fake_merge)
+    r = await client.post(f"/api/projects/{project_id}/pin-check", json={
+        "item_type": "world_setting", "content": "灵气如潮汐涨落。"})
+    assert r.status_code == 200 and r.json()["mode"] == "merged"
+    items = (await client.get(f"/api/projects/{project_id}/workspace")).json()
+    ws = next(i for i in items if i["item_type"] == "world_setting")
+    assert "潮汐" in ws["content"] and "万物有灵" in ws["content"]
+
+    # 2) 有冲突：不合并，进 distill_conflicts + 对话里出现核对卡
+    async def fake_conflict(messages, system_prompt=None, temperature=0.3, **kw):
+        return {"mode": "conflict", "merged_content": "",
+                "conflicts": [{
+                    "old_summary": "万物有灵", "new_summary": "一物一律",
+                    "suggestion": "以一物一律为主干",
+                    "new_content": "力量体系：一物一律，规则森严。",
+                }]}
+
+    monkeypatch.setattr(base_module, "chat_json", fake_conflict)
+    r2 = await client.post(f"/api/projects/{project_id}/pin-check", json={
+        "item_type": "world_setting", "content": "力量体系改成规则森严的一物一律。"})
+    assert r2.status_code == 200 and r2.json()["mode"] == "conflict"
+    # 现有点位保持旧内容
+    items2 = (await client.get(f"/api/projects/{project_id}/workspace")).json()
+    ws2 = next(i for i in items2 if i["item_type"] == "world_setting")
+    assert "一物一律" not in ws2["content"]
+    # 对话里出现核对卡；digest 有待取舍
+    msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()
+    assert any('"kind": "distill_review"' in m["content"].replace('{"kind"', '{"kind"')
+               or 'distill_review' in m["content"] for m in msgs)
+    digest = (await client.get(f"/api/projects/{project_id}/distill-conflicts/digest")).json()
+    assert digest["pending_count"] == 1
+    # 走通用取舍端点收尾：用新
+    rr = await client.post(f"/api/projects/{project_id}/distill-conflicts/resolve", json={
+        "choices": [{"id": digest["pending"][0]["id"], "decision": "new"}]})
+    assert rr.json()["resolved"] == 1
+    items3 = (await client.get(f"/api/projects/{project_id}/workspace")).json()
+    ws3 = next(i for i in items3 if i["item_type"] == "world_setting")
+    assert "一物一律" in ws3["content"]

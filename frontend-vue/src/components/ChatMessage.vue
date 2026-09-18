@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import type { Message, WorkspaceItemType } from '../types'
+import * as api from '../api'
 import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, parseDistillReview, splitMessageWithChoices, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
 import { Trash2 } from 'lucide-vue-next'
@@ -136,6 +137,8 @@ const showPinModal = ref(false)
 const pinType = ref<WorkspaceItemType>('story_core')
 const pinTitle = ref('')
 const pinSaving = ref(false)
+// 沉淀前的比对结果：conflict 时弹窗切换为核对卡（同 /distill 人工取舍链路）
+const pinConflicts = ref<import('../types').DistillReviewRecord | null>(null)
 const pinTypes: { value: WorkspaceItemType; label: string }[] = [
   { value: 'story_core', label: '核心设定' },
   { value: 'world_setting', label: '世界观' },
@@ -146,6 +149,7 @@ const pinTypes: { value: WorkspaceItemType; label: string }[] = [
 function onPin() {
   pinTitle.value = ''
   pinType.value = 'story_core'
+  pinConflicts.value = null
   showPinModal.value = true
 }
 function closePin() {
@@ -160,14 +164,21 @@ async function doPin() {
   if (!store.currentProjectId) return
   pinSaving.value = true
   try {
-    await store.createWorkspaceItem(store.currentProjectId, {
+    const r = await api.pinCheck(store.currentProjectId, {
       item_type: pinType.value,
-      title: pinTitle.value.trim() || m.value.content.slice(0, 16),
       content: m.value.content,
-      status: 'draft',
+      title: pinTitle.value.trim() || m.value.content.slice(0, 16),
     })
+    if (r.mode === 'conflict' && r.conflicts?.length) {
+      pinConflicts.value = { kind: 'distill_review', total_merged: 0, conflicts: r.conflicts }
+      store.fetchWorkspaceItems(store.currentProjectId)  // 总览的「分拣核对」块同步出现待取舍
+      return  // 弹窗切到核对卡，取舍后由卡片负责收尾
+    }
     showPinModal.value = false
-    store.notifySuccess('已沉淀到工作台（草稿）')
+    store.notifySuccess(r.note || '已沉淀')
+    store.fetchWorkspaceItems(store.currentProjectId)
+  } catch (e) {
+    alert(`沉淀失败：${(e as Error).message}`)
   } finally {
     pinSaving.value = false
   }
@@ -267,17 +278,28 @@ async function doPin() {
     <Teleport to="body">
       <div v-if="showPinModal" class="modal-overlay show" @click.self="closePin">
         <div class="modal-card">
-          <h3>沉淀到工作台</h3>
-          <label class="pin-label">类型</label>
-          <select v-model="pinType" class="modal-input">
-            <option v-for="t in pinTypes" :key="t.value" :value="t.value">{{ t.label }}</option>
-          </select>
-          <label class="pin-label">标题（可选）</label>
-          <input v-model="pinTitle" class="modal-input" placeholder="留空则取内容前16字" @keydown.enter="doPin" />
-          <div class="modal-actions">
-            <button class="btn" :disabled="pinSaving" @click="closePin">取消</button>
-            <button class="btn btn-primary" :disabled="pinSaving" @click="doPin">{{ pinSaving ? '保存中…' : '沉淀' }}</button>
-          </div>
+          <!-- 冲突核对视图：沉淀内容与总览现有设定打架时切换 -->
+          <template v-if="pinConflicts">
+            <h3>沉淀核对</h3>
+            <DistillReviewCard :record="pinConflicts" :project-id="store.currentProjectId!" />
+            <div class="modal-actions">
+              <button class="btn" @click="closePin">关闭</button>
+            </div>
+          </template>
+          <template v-else>
+            <h3>沉淀到工作台</h3>
+            <div class="pin-label pin-hint">沉淀前会与总览里该点位的现有内容核对：不冲突自动合并，有冲突会让你取舍。</div>
+            <label class="pin-label">类型</label>
+            <select v-model="pinType" class="modal-input">
+              <option v-for="t in pinTypes" :key="t.value" :value="t.value">{{ t.label }}</option>
+            </select>
+            <label class="pin-label">标题（可选）</label>
+            <input v-model="pinTitle" class="modal-input" placeholder="留空则取内容前16字" @keydown.enter="doPin" />
+            <div class="modal-actions">
+              <button class="btn" :disabled="pinSaving" @click="closePin">取消</button>
+              <button class="btn btn-primary" :disabled="pinSaving" @click="doPin">{{ pinSaving ? '核对中…' : '沉淀' }}</button>
+            </div>
+          </template>
         </div>
       </div>
     </Teleport>
@@ -285,6 +307,11 @@ async function doPin() {
 </template>
 
 <style scoped>
+.pin-hint {
+  margin-bottom: 10px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
 /* 可点选项：整行可选卡（完整文本 + 单选圆点），点选 → 确认 → 一次发送 */
 .msg-choices {
   display: flex;

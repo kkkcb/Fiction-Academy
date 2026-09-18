@@ -470,6 +470,115 @@ async def distill_conflicts_digest(project_id: str):
     }
 
 
+class PinCheckBody(BaseModel):
+    """手动沉淀前的比对：item_type 目标点位，content 待沉淀的 AI 回复。"""
+    item_type: str
+    content: str
+    title: str = ""
+
+
+@router.post("/projects/{project_id}/pin-check")
+async def pin_check(project_id: str, body: PinCheckBody):
+    """沉淀时与总览现有点位内容核对：无冲突自动合并；有冲突进人工取舍（同 /distill 链路）。"""
+    db = await get_db()
+    pt = body.item_type
+    label = POINT_LABELS.get(pt, pt)
+    existing = await fetch_one(
+        db,
+        "SELECT id, title, content FROM workspace_items WHERE project_id = ? AND item_type = ? "
+        "AND status IN ('draft', 'finalized', 'locked') ORDER BY CASE status WHEN 'finalized' THEN 0 "
+        "WHEN 'locked' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1",
+        (project_id, pt),
+    )
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="沉淀内容为空")
+
+    # 该点位还没有内容：谈不上冲突，直接建草稿
+    if not existing:
+        item_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO workspace_items (id, project_id, item_type, status, title, content, sort_order) "
+            "VALUES (?, ?, ?, 'draft', ?, ?, 0)",
+            (item_id, project_id, pt, (body.title or "").strip() or label, content),
+        )
+        await db.commit()
+        from backend.services import repo as _repo
+        await _repo.touch_project(db, project_id)
+        return {"mode": "created", "note": f"{label} 首次沉淀（草稿）"}
+
+    # 与现有内容比对（复用分拣编辑人格）：合并 or 冲突
+    from backend.agents.base import chat_json
+    prompt = (
+        f"你是设定分拣编辑。用户要把一段 AI 回复手动沉淀到「{label}」点位，"
+        f"请与该点位现有内容比对后给结论。\n\n"
+        f"## 现有内容\n{(existing['content'] or '')[:6000]}\n\n"
+        f"## 待沉淀内容\n{content[:6000]}\n\n"
+        "## 判定规则\n"
+        "1. 待沉淀内容与现有内容**不矛盾**（新增信息、补充细节、不相关的素材）→ mode=merge，"
+        "输出 merged_content：现有内容 + 新信息有机融合成一个连贯版本（不是简单拼接）\n"
+        "2. 待沉淀内容与现有内容**冲突/矛盾**（推翻或修正旧说法）→ mode=conflict，"
+        "old_summary=现有关键说法、new_summary=新说法、suggestion=融合建议（可空）、"
+        "new_content=若采用新说法时该点位的完整内容\n\n"
+        '输出 JSON：{"mode": "merge" | "conflict", "merged_content": "...", "note": "一句话说明", '
+        '"conflicts": [{"old_summary": "...", "new_summary": "...", "suggestion": "...", "new_content": "..."}]}'
+    )
+    result = await chat_json(
+        messages=[{"role": "user", "content": prompt}],
+        system_prompt=SORT_EDIT_PROMPT,
+        temperature=0.3,
+    )
+
+    if result.get("mode") == "conflict":
+        rows = []
+        for c in (result.get("conflicts") or [])[:3]:
+            if not isinstance(c, dict):
+                continue
+            old_s = (c.get("old_summary") or "").strip()
+            new_s = (c.get("new_summary") or "").strip()
+            if not old_s or not new_s:
+                continue
+            cur = await db.execute(
+                "INSERT INTO distill_conflicts (project_id, point, old_summary, new_summary, suggestion, new_content) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (project_id, pt, old_s[:400], new_s[:400],
+                 (c.get("suggestion") or "").strip()[:400],
+                 (c.get("new_content") or "").strip() or (existing["content"] or "")),
+            )
+            rows.append({
+                "id": cur.lastrowid, "point": pt, "label": label,
+                "old_summary": old_s[:200], "new_summary": new_s[:200],
+                "suggestion": (c.get("suggestion") or "").strip()[:200],
+            })
+        await db.commit()
+        if rows:
+            # 核对卡同步写入 studio 对话：弹窗关掉后还能从对话里继续取舍
+            conv = await fetch_one(
+                db, "SELECT id FROM conversations WHERE project_id = ? AND point = '__studio__'", (project_id,))
+            if conv:
+                from backend.services import repo as _repo
+                card = json.dumps({
+                    "kind": "distill_review", "total_merged": 0, "conflicts": rows,
+                }, ensure_ascii=False)
+                await _repo.save_message(db, conv["id"], "assistant", card)
+                await db.commit()
+            return {"mode": "conflict", "conflicts": rows,
+                    "note": f"{label} 与现有设定有 {len(rows)} 处冲突，请核对取舍"}
+        # 冲突信息不完整时按合并兜底处理
+
+    merged = (result.get("merged_content") or "").strip()
+    if len(merged) < 20:
+        merged = content
+    await db.execute(
+        "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+        (merged, existing["id"]),
+    )
+    await db.commit()
+    from backend.services import repo as _repo
+    await _repo.touch_project(db, project_id)
+    return {"mode": "merged", "note": (result.get("note") or f"已合并进现有{label}").strip()[:100]}
+
+
 @router.post("/projects/{project_id}/studio/build")
 async def studio_build_skeleton(project_id: str):
     """从创作对话历史一键生成全部骨架点位（故事核→世界观→人物→倒推→正向）。"""

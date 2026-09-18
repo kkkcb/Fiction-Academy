@@ -27,6 +27,7 @@ import type {
   PromptLibrary,
   PromptHistoryItem,
   DistillDigest,
+  DistillConflictItem,
 } from './types'
 
 const BASE = '/api'
@@ -132,6 +133,19 @@ export function resolveDistillConflicts(
 
 export function getDistillDigest(projectId: ID): Promise<DistillDigest> {
   return request<DistillDigest>('GET', `/projects/${projectId}/distill-conflicts/digest`)
+}
+
+export interface PinCheckResult {
+  mode: 'created' | 'merged' | 'conflict'
+  note: string
+  conflicts?: DistillConflictItem[]
+}
+
+export function pinCheck(
+  projectId: ID,
+  data: { item_type: string; content: string; title?: string },
+): Promise<PinCheckResult> {
+  return request<PinCheckResult>('POST', `/projects/${projectId}/pin-check`, data)
 }
 
 export function createProject(data: { name: string; genre?: string; rules_text?: string; author_key?: string }): Promise<Project> {
