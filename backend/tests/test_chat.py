@@ -356,3 +356,21 @@ async def test_pin_redistill_stream_emits_thinking_and_modules(client, project_i
     result = next(l for l in lines if "modules" in l)
     assert result["modules"][0]["point"] == "story_core"
     assert any(l.get("done") for l in lines)
+
+
+@pytest.mark.asyncio
+async def test_chat_reply_persists_request_json(client, project_id, llm_calls):
+    """AI 回复留存本次请求输入（系统提示词+消息列表+模型），双击可查。"""
+    resp = await client.post(f"/api/projects/{project_id}/conversations")
+    cid = resp.json()["id"]
+    await _stream_chat(client, cid, content="你好，聊聊主角")
+    msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()
+    assistant = next(m for m in msgs if m["role"] == "assistant")
+    assert assistant.get("request_json"), "回复未留存 request_json"
+    payload = json.loads(assistant["request_json"])
+    assert "system_prompt" in payload and payload["system_prompt"].strip()
+    assert payload["messages"], "消息列表为空"
+    assert any(m["content"] == "你好，聊聊主角" for m in payload["messages"])
+    # 用户消息不留存（它本身不是请求）
+    user = next(m for m in msgs if m["role"] == "user")
+    assert not user.get("request_json")

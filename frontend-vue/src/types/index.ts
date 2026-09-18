@@ -87,7 +87,14 @@ export interface Message {
   content: string
   thinking?: string
   consult_kind?: string
+  request_json?: string | null
   created_at?: string
+}
+
+export interface MessageRequestPayload {
+  system_prompt: string
+  messages: { role: string; content: string }[]
+  model: string
 }
 
 export type WorkspaceItemType =

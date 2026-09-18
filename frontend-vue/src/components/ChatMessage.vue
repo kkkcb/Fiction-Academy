@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
-import type { Message } from '../types'
+import type { Message, MessageRequestPayload } from '../types'
 import * as api from '../api'
 import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, parseDistillReview, splitMessageWithChoices, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
@@ -77,6 +77,28 @@ function confirmChoices() {
 
 const copied = ref(false)
 let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+// 双击 AI 回复：查看本次请求发给模型的完整输入（系统提示词含上下文 + 消息列表）
+const showRequestModal = ref(false)
+const requestPayload = ref<MessageRequestPayload | null>(null)
+
+function showRequest() {
+  if (isUser.value || props.isStreaming) return
+  if (!m.value.request_json) {
+    requestPayload.value = null
+  } else {
+    try {
+      requestPayload.value = JSON.parse(m.value.request_json) as MessageRequestPayload
+    } catch {
+      requestPayload.value = null
+    }
+  }
+  showRequestModal.value = true
+}
+
+function closeRequest() {
+  showRequestModal.value = false
+}
 
 async function onCopy() {
   if (!m.value.content) return
@@ -227,7 +249,9 @@ async function applyPin() {
     </div>
   </div>
 
-  <div v-else class="msg" :class="m.role" @contextmenu="onContextMenu">
+  <div v-else class="msg" :class="m.role" @contextmenu="onContextMenu"
+    :title="isUser ? undefined : '双击查看本次请求的输入'"
+    @dblclick="showRequest">
     <div v-if="!isUser" class="msg-role">
       {{ assistantRole }}
       <span v-if="timeText" class="msg-time">{{ timeText }}</span>
@@ -287,6 +311,35 @@ async function applyPin() {
           <Trash2 :size="13" :stroke-width="1.75" />
           删除消息
         </button>
+      </div>
+    </Teleport>
+    <Teleport to="body">
+      <div v-if="showRequestModal" class="modal-overlay show" @click.self="closeRequest">
+        <div class="modal-card request-modal">
+          <h3>本次请求的输入</h3>
+          <template v-if="requestPayload">
+            <div class="req-meta">
+              <span class="req-chip">模型：{{ requestPayload.model || '默认' }}</span>
+              <span class="req-chip">消息 {{ requestPayload.messages.length }} 条</span>
+              <span class="req-chip">系统提示词 {{ requestPayload.system_prompt.length }} 字</span>
+            </div>
+            <details open class="req-section">
+              <summary>系统提示词（含人格与上下文）</summary>
+              <pre class="req-pre">{{ requestPayload.system_prompt }}</pre>
+            </details>
+            <details class="req-section">
+              <summary>消息列表</summary>
+              <div v-for="(msg, i) in requestPayload.messages" :key="i" class="req-msg">
+                <span class="req-role" :class="msg.role">{{ msg.role === 'user' ? '用户' : 'AI' }}</span>
+                <pre class="req-pre">{{ msg.content }}</pre>
+              </div>
+            </details>
+          </template>
+          <p v-else class="pin-hint">这条消息没有留存请求输入（旧版本数据，或非对话生成的消息）。</p>
+          <div class="modal-actions">
+            <button class="btn btn-primary" @click="closeRequest">关闭</button>
+          </div>
+        </div>
       </div>
     </Teleport>
     <Teleport to="body">
@@ -396,6 +449,34 @@ async function applyPin() {
 .pin-thinking-details summary {
   font-size: 12px; color: var(--text-tertiary); cursor: pointer; user-select: none;
 }
+
+/* 请求输入查看弹窗 */
+.request-modal { max-width: min(760px, 92vw); max-height: 86vh; overflow-y: auto; }
+.req-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.req-chip {
+  font-size: 11.5px; color: var(--text-secondary);
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-full); padding: 2px 10px;
+}
+.req-section { margin-bottom: 10px; }
+.req-section summary {
+  font-size: 12.5px; font-weight: 600; color: var(--text-primary);
+  cursor: pointer; user-select: none; margin-bottom: 6px;
+}
+.req-pre {
+  margin: 0; padding: 10px 12px; border-radius: 8px;
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  font-family: var(--font-mono, monospace); font-size: 11.5px; line-height: 1.65;
+  color: var(--text-primary); white-space: pre-wrap; word-break: break-word;
+  max-height: 340px; overflow-y: auto;
+}
+.req-msg { margin-bottom: 8px; }
+.req-role {
+  display: inline-block; font-size: 11px; margin-bottom: 4px;
+  border-radius: var(--radius-full); padding: 1px 9px;
+}
+.req-role.user { color: var(--accent); background: var(--accent-light); }
+.req-role.assistant { color: var(--text-secondary); background: var(--bg-secondary); }
 /* 可点选项：整行可选卡（完整文本 + 单选圆点），点选 → 确认 → 一次发送 */
 .msg-choices {
   display: flex;

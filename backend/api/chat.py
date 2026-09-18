@@ -1107,8 +1107,17 @@ async def _chat_events(
                 conversation_id, assistant_id or "default", len(messages), regenerate)
 
     full_reply = ""
-    # 开写即建行、边写边落库：刷新/断线后已生成部分不丢
-    _msg_id = await repo.save_message(db, conversation_id, "assistant", "")
+    # 开写即建行、边写边落库：刷新/断线后已生成部分不丢。
+    # request_json 留档本次请求的完整输入（系统提示词含上下文 + 消息列表 + 模型），
+    # 前端双击回复可查看
+    _msg_id = await repo.save_message(
+        db, conversation_id, "assistant", "",
+        request_json=json.dumps({
+            "system_prompt": final_system_prompt,
+            "messages": messages,
+            "model": assistant_model or "",
+        }, ensure_ascii=False),
+    )
     _saved_len = 0
     import time as _t
     _last_save = _t.time()

@@ -106,11 +106,12 @@ async def conversation_project_id(db, conversation_id: str) -> str | None:
     return row["project_id"] if row else None
 
 
-async def save_message(db, conversation_id: str, role: str, content: str) -> str:
+async def save_message(db, conversation_id: str, role: str, content: str,
+                       request_json: str = "") -> str:
     msg_id = str(uuid.uuid4())
     await db.execute(
-        "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)",
-        (msg_id, conversation_id, role, content),
+        "INSERT INTO messages (id, conversation_id, role, content, request_json) VALUES (?, ?, ?, ?, ?)",
+        (msg_id, conversation_id, role, content, request_json),
     )
     return msg_id
 

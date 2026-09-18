@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS messages (
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
     content TEXT NOT NULL,
+    request_json TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -396,6 +397,8 @@ CREATE INDEX IF NOT EXISTS idx_prompt_history_key ON prompt_history(key, id DESC
     created_at TEXT DEFAULT (datetime('now')),
     resolved_at TEXT DEFAULT ''
 )"""),
+    (20, "add_messages_request_json",
+     "ALTER TABLE messages ADD COLUMN request_json TEXT DEFAULT ''"),
 ]
 
 _db: aiosqlite.Connection | None = None
