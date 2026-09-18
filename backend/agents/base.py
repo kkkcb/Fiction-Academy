@@ -184,10 +184,12 @@ async def chat_text(messages: list[dict], system_prompt: str | None = None,
 
 async def chat_json(messages: list[dict], system_prompt: str | None = None,
                     model: str = "", temperature: float = 0.5,
-                    response_schema: type[BaseModel] | None = None) -> dict:
+                    response_schema: type[BaseModel] | None = None,
+                    deep_thinking: bool = False) -> dict:
     """结构化输出。失败（解析或 schema 校验不通过）自动重试，重试耗尽抛 LLMJSONError。
 
     传入 response_schema 时返回 `model_dump()` 后的 dict 并保证通过校验。
+    deep_thinking=True 时显式开启最强思考（供沉淀再分拣这类需要全局比对的场景）。
     """
     client = _get_client()
     sys = system_prompt if system_prompt is not None else SYSTEM_PROMPT
@@ -197,12 +199,19 @@ async def chat_json(messages: list[dict], system_prompt: str | None = None,
     for attempt in range(LLM_MAX_RETRIES):
         content = ""
         try:
+            # 思考模式与 response_format 的 JSON 强约束在部分模型上互斥：
+            # deep_thinking 时放开 JSON 模式，靠提示词约束 + 失败反馈重试兜底
+            extra: dict = {}
+            if deep_thinking:
+                extra["extra_body"] = {"thinking": {"type": "enabled"}}
+            else:
+                extra["response_format"] = {"type": "json_object"}
             response = await client.chat.completions.create(
                 model=model or DEFAULT_MODEL,
                 messages=full_messages,
                 temperature=temperature,
-                response_format={"type": "json_object"},
                 max_tokens=LLM_MAX_TOKENS,
+                **extra,
             )
             _log_usage("chat_json", getattr(response, "usage", None))
             content = response.choices[0].message.content or ""

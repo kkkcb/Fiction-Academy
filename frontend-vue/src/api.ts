@@ -135,17 +135,24 @@ export function getDistillDigest(projectId: ID): Promise<DistillDigest> {
   return request<DistillDigest>('GET', `/projects/${projectId}/distill-conflicts/digest`)
 }
 
-export interface PinCheckResult {
-  mode: 'created' | 'merged' | 'conflict'
+export interface PinModuleSuggestion {
+  point: string
+  label: string
   note: string
-  conflicts?: DistillConflictItem[]
+  content: string
+  is_new: boolean
+  old_chars: number
 }
 
-export function pinCheck(
+export function pinRedistill(projectId: ID, content: string): Promise<{ modules: PinModuleSuggestion[]; note: string }> {
+  return request('POST', `/projects/${projectId}/pin-redistill`, { content })
+}
+
+export function pinApply(
   projectId: ID,
-  data: { item_type: string; content: string; title?: string },
-): Promise<PinCheckResult> {
-  return request<PinCheckResult>('POST', `/projects/${projectId}/pin-check`, data)
+  modules: { point: string; content: string }[],
+): Promise<{ ok: boolean; applied: { point: string; label: string }[] }> {
+  return request('POST', `/projects/${projectId}/pin-apply`, { modules })
 }
 
 export function createProject(data: { name: string; genre?: string; rules_text?: string; author_key?: string }): Promise<Project> {

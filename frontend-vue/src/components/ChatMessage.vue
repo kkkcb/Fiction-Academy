@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
-import type { Message, WorkspaceItemType } from '../types'
+import type { Message } from '../types'
 import * as api from '../api'
 import { formatReceiptMd, formatContent, parseCommand, parseConsultRecord, parseDistillReview, splitMessageWithChoices, formatTime, charCount, pointPersonaName } from '../utils/format'
 import { useAppStore } from '../stores/app'
@@ -134,22 +134,16 @@ onUnmounted(() => {
 })
 
 const showPinModal = ref(false)
-const pinType = ref<WorkspaceItemType>('story_core')
-const pinTitle = ref('')
 const pinSaving = ref(false)
-// 沉淀前的比对结果：conflict 时弹窗切换为核对卡（同 /distill 人工取舍链路）
-const pinConflicts = ref<import('../types').DistillReviewRecord | null>(null)
-const pinTypes: { value: WorkspaceItemType; label: string }[] = [
-  { value: 'story_core', label: '核心设定' },
-  { value: 'world_setting', label: '世界观' },
-  { value: 'character_setting', label: '角色设定' },
-  { value: 'outline', label: '大纲' },
-  { value: 'foreshadow', label: '伏笔' },
-]
+// 沉淀=全模块再分拣：深度思考比对 → 各模块融合建议 → 勾选确认写入
+const pinSuggestions = ref<import('../api').PinModuleSuggestion[]>([])
+const pinChosen = ref<Record<string, boolean>>({})
+const pinExpanded = ref<Record<string, boolean>>({})
+const pinNote = ref('')
+const pinApplied = ref(0)
 function onPin() {
-  pinTitle.value = ''
-  pinType.value = 'story_core'
-  pinConflicts.value = null
+  pinSuggestions.value = []
+  pinApplied.value = 0
   showPinModal.value = true
 }
 function closePin() {
@@ -161,24 +155,31 @@ function onEsc(e: KeyboardEvent) {
 onMounted(() => window.addEventListener('keydown', onEsc))
 onUnmounted(() => window.removeEventListener('keydown', onEsc))
 async function doPin() {
-  if (!store.currentProjectId) return
+  if (!store.currentProjectId || pinSaving.value) return
   pinSaving.value = true
   try {
-    const r = await api.pinCheck(store.currentProjectId, {
-      item_type: pinType.value,
-      content: m.value.content,
-      title: pinTitle.value.trim() || m.value.content.slice(0, 16),
-    })
-    if (r.mode === 'conflict' && r.conflicts?.length) {
-      pinConflicts.value = { kind: 'distill_review', total_merged: 0, conflicts: r.conflicts }
-      store.fetchWorkspaceItems(store.currentProjectId)  // 总览的「分拣核对」块同步出现待取舍
-      return  // 弹窗切到核对卡，取舍后由卡片负责收尾
-    }
-    showPinModal.value = false
-    store.notifySuccess(r.note || '已沉淀')
+    const r = await api.pinRedistill(store.currentProjectId, m.value.content)
+    pinSuggestions.value = r.modules
+    pinNote.value = r.note
+    pinChosen.value = Object.fromEntries(r.modules.map(x => [x.point, true]))
+    pinExpanded.value = Object.fromEntries(r.modules.map(x => [x.point, false]))
+  } catch (e) {
+    alert(`再分拣失败：${(e as Error).message}`)
+  } finally {
+    pinSaving.value = false
+  }
+}
+async function applyPin() {
+  if (!store.currentProjectId) return
+  const picked = pinSuggestions.value.filter(x => pinChosen.value[x.point])
+  if (!picked.length) return
+  pinSaving.value = true
+  try {
+    const r = await api.pinApply(store.currentProjectId, picked.map(x => ({ point: x.point, content: x.content })))
+    pinApplied.value = r.applied.length
     store.fetchWorkspaceItems(store.currentProjectId)
   } catch (e) {
-    alert(`沉淀失败：${(e as Error).message}`)
+    alert(`写入失败：${(e as Error).message}`)
   } finally {
     pinSaving.value = false
   }
@@ -277,28 +278,64 @@ async function doPin() {
     </Teleport>
     <Teleport to="body">
       <div v-if="showPinModal" class="modal-overlay show" @click.self="closePin">
-        <div class="modal-card">
-          <!-- 冲突核对视图：沉淀内容与总览现有设定打架时切换 -->
-          <template v-if="pinConflicts">
-            <h3>沉淀核对</h3>
-            <DistillReviewCard :record="pinConflicts" :project-id="store.currentProjectId!" />
+        <div class="modal-card pin-modal">
+          <!-- 已采纳完成 -->
+          <template v-if="pinApplied">
+            <h3>沉淀完成</h3>
+            <p class="pin-hint">已按你的确认更新 {{ pinApplied }} 个模块，右侧总览即时生效。</p>
             <div class="modal-actions">
-              <button class="btn" @click="closePin">关闭</button>
+              <button class="btn btn-primary" @click="closePin">好</button>
             </div>
           </template>
-          <template v-else>
-            <h3>沉淀到工作台</h3>
-            <div class="pin-label pin-hint">沉淀前会与总览里该点位的现有内容核对：不冲突自动合并，有冲突会让你取舍。</div>
-            <label class="pin-label">类型</label>
-            <select v-model="pinType" class="modal-input">
-              <option v-for="t in pinTypes" :key="t.value" :value="t.value">{{ t.label }}</option>
-            </select>
-            <label class="pin-label">标题（可选）</label>
-            <input v-model="pinTitle" class="modal-input" placeholder="留空则取内容前16字" @keydown.enter="doPin" />
-            <div class="modal-actions">
-              <button class="btn" :disabled="pinSaving" @click="closePin">取消</button>
-              <button class="btn btn-primary" :disabled="pinSaving" @click="doPin">{{ pinSaving ? '核对中…' : '沉淀' }}</button>
+
+          <!-- 再分拣结果：逐模块确认 -->
+          <template v-else-if="pinSuggestions.length">
+            <h3>沉淀再分拣结果</h3>
+            <p class="pin-hint">{{ pinNote }} 勾选要采纳的模块（点模块名展开看完整融合内容）。</p>
+            <div class="pin-modules">
+              <div v-for="x in pinSuggestions" :key="x.point" class="pin-module" :class="{ off: !pinChosen[x.point] }">
+                <label class="pin-module-head">
+                  <input
+                    type="checkbox"
+                    :checked="pinChosen[x.point]"
+                    @change="pinChosen = { ...pinChosen, [x.point]: ($event.target as HTMLInputElement).checked }"
+                  />
+                  <span class="pin-module-label">{{ x.label }}</span>
+                  <span v-if="x.is_new" class="pin-new-badge">新建</span>
+                  <span v-else class="pin-old-chars">{{ x.old_chars }} 字 → {{ x.content.length }} 字</span>
+                  <span class="pin-flex"></span>
+                  <button class="btn-link" @click.prevent="pinExpanded = { ...pinExpanded, [x.point]: !pinExpanded[x.point] }">
+                    {{ pinExpanded[x.point] ? '收起' : '展开' }}
+                  </button>
+                </label>
+                <p v-if="x.note" class="pin-module-note">{{ x.note }}</p>
+                <div v-if="pinExpanded[x.point]" class="markdown-body pin-module-content" v-html="formatReceiptMd(x.content)"></div>
+              </div>
             </div>
+            <div class="modal-actions">
+              <button class="btn" :disabled="pinSaving" @click="closePin">取消（不写入）</button>
+              <button class="btn btn-primary" :disabled="pinSaving || !pinSuggestions.some(x => pinChosen[x.point])" @click="applyPin">
+                {{ pinSaving ? '写入中…' : `采纳所选（${pinSuggestions.filter(x => pinChosen[x.point]).length}）` }}
+              </button>
+            </div>
+          </template>
+
+          <!-- 初始：说明 + 开始 -->
+          <template v-else-if="!pinSaving">
+            <h3>沉淀到设定</h3>
+            <div class="pin-hint">
+              以这条消息为<b>新设定</b>、总览全部模块为<b>原设定</b>，深度思考全局比对后重新产出各模块的融合版，由你逐模块确认后写入。
+            </div>
+            <div class="modal-actions">
+              <button class="btn" @click="closePin">取消</button>
+              <button class="btn btn-primary" @click="doPin">开始再分拣（深度思考）</button>
+            </div>
+          </template>
+
+          <!-- 深度思考中 -->
+          <template v-else>
+            <h3>深度思考中…</h3>
+            <div class="pin-hint">正在把这条消息与总览全部模块做全局比对（思考强度最高，跨模块联动也会检查），稍等。</div>
           </template>
         </div>
       </div>
@@ -311,6 +348,30 @@ async function doPin() {
   margin-bottom: 10px;
   color: var(--text-tertiary);
   font-weight: 400;
+  line-height: 1.6;
+}
+.pin-modal { max-width: min(680px, 92vw); max-height: 86vh; overflow-y: auto; }
+.pin-modules { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 12px; }
+.pin-module {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 12px;
+  transition: opacity 0.15s;
+}
+.pin-module.off { opacity: 0.45; }
+.pin-module-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.pin-module-label { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.pin-new-badge {
+  font-size: 10.5px; color: var(--accent); background: var(--accent-light);
+  border-radius: var(--radius-full); padding: 1px 8px;
+}
+.pin-old-chars { font-size: 11px; color: var(--text-tertiary); }
+.pin-flex { flex: 1; }
+.pin-module-note { margin: 6px 0 0; font-size: 12px; color: var(--text-secondary); }
+.pin-module-content {
+  margin-top: 8px; padding: 10px; border-radius: 8px;
+  background: var(--bg-secondary); font-size: 12px; line-height: 1.7;
+  max-height: 320px; overflow-y: auto;
 }
 /* 可点选项：整行可选卡（完整文本 + 单选圆点），点选 → 确认 → 一次发送 */
 .msg-choices {

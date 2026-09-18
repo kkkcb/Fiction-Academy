@@ -470,113 +470,125 @@ async def distill_conflicts_digest(project_id: str):
     }
 
 
-class PinCheckBody(BaseModel):
-    """手动沉淀前的比对：item_type 目标点位，content 待沉淀的 AI 回复。"""
-    item_type: str
+class PinRedistillBody(BaseModel):
+    """全模块再分拣：content = 选中的对话（新设定），与总览全部模块（原设定）两输入比对。"""
     content: str
-    title: str = ""
 
 
-@router.post("/projects/{project_id}/pin-check")
-async def pin_check(project_id: str, body: PinCheckBody):
-    """沉淀时与总览现有点位内容核对：无冲突自动合并；有冲突进人工取舍（同 /distill 链路）。"""
+class PinApplyBody(BaseModel):
+    """确认采纳的模块（用户在确认界面上勾选后的子集）。"""
+    modules: list[dict] = []
+
+
+_MODULE_POINTS = ("story_core", "world_setting", "character_setting", "outline_reverse", "outline", "foreshadow")
+
+
+@router.post("/projects/{project_id}/pin-redistill")
+async def pin_redistill(project_id: str, body: PinRedistillBody):
+    """沉淀再分拣：新设定（选中对话）× 原设定（总览全部模块）→ 各模块融合版，等用户逐模块确认。
+
+    思考强度开到最高（deep_thinking）：需要跨六个模块全局比对，浅思考容易漏改。
+    只产出建议，不落库；采纳在 /pin-apply。
+    """
     db = await get_db()
-    pt = body.item_type
-    label = POINT_LABELS.get(pt, pt)
-    existing = await fetch_one(
-        db,
-        "SELECT id, title, content FROM workspace_items WHERE project_id = ? AND item_type = ? "
-        "AND status IN ('draft', 'finalized', 'locked') ORDER BY CASE status WHEN 'finalized' THEN 0 "
-        "WHEN 'locked' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1",
-        (project_id, pt),
-    )
     content = (body.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="沉淀内容为空")
 
-    # 该点位还没有内容：谈不上冲突，直接建草稿
-    if not existing:
-        item_id = str(uuid.uuid4())
-        await db.execute(
-            "INSERT INTO workspace_items (id, project_id, item_type, status, title, content, sort_order) "
-            "VALUES (?, ?, ?, 'draft', ?, ?, 0)",
-            (item_id, project_id, pt, (body.title or "").strip() or label, content),
-        )
-        await db.commit()
-        from backend.services import repo as _repo
-        await _repo.touch_project(db, project_id)
-        return {"mode": "created", "note": f"{label} 首次沉淀（草稿）"}
-
-    # 与现有内容比对（复用分拣编辑人格）：合并 or 冲突
-    from backend.agents.base import chat_json
-    prompt = (
-        f"你是设定分拣编辑。用户要把一段 AI 回复手动沉淀到「{label}」点位，"
-        f"请与该点位现有内容比对后给结论。\n\n"
-        f"## 现有内容\n{(existing['content'] or '')[:6000]}\n\n"
-        f"## 待沉淀内容\n{content[:6000]}\n\n"
-        "## 判定规则\n"
-        "1. 待沉淀内容与现有内容**不矛盾**（新增信息、补充细节、不相关的素材）→ mode=merge，"
-        "输出 merged_content：现有内容 + 新信息有机融合成一个连贯版本（不是简单拼接）\n"
-        "2. 待沉淀内容与现有内容**冲突/矛盾**（推翻或修正旧说法）→ mode=conflict，"
-        "old_summary=现有关键说法、new_summary=新说法、suggestion=融合建议（可空）、"
-        "new_content=若采用新说法时该点位的完整内容\n\n"
-        '输出 JSON：{"mode": "merge" | "conflict", "merged_content": "...", "note": "一句话说明", '
-        '"conflicts": [{"old_summary": "...", "new_summary": "...", "suggestion": "...", "new_content": "..."}]}'
+    rows = await fetch_all(
+        db,
+        "SELECT item_type, content FROM workspace_items WHERE project_id = ? AND item_type IN ("
+        + ",".join("?" * len(_MODULE_POINTS)) + ") "
+        "AND status IN ('draft', 'finalized', 'locked') ORDER BY item_type",
+        (project_id, *_MODULE_POINTS),
     )
+    by_point = {r["item_type"]: r["content"] or "" for r in rows}
+
+    old_block = "\n\n".join(
+        f"【{POINT_LABELS.get(pt, pt)}】\n{(by_point.get(pt) or '（空，尚无内容）')[:4000]}"
+        for pt in _MODULE_POINTS
+    )
+    prompt = (
+        "你是设定总编。用户从对话里选中了一段内容要沉淀进故事设定。"
+        "请以「新设定」（选中的对话）为一方、「原设定」（下方全部模块）为另一方做全局比对，"
+        "重新产出每个受影响模块的完整融合版。\n\n"
+        f"## 原设定（全部模块）\n{old_block}\n\n"
+        f"## 新设定（选中的对话）\n{content[:8000]}\n\n"
+        "## 要求\n"
+        "1. 逐模块判断：新设定里是否有属于该模块的信息（包括跨模块的联动影响，如故事核变了要检查世界观/大纲是否需要跟着调）\n"
+        "2. 有变化的模块输出融合后的【完整内容】（原内容 + 新信息有机融合，冲突处以新设定为准并吸收旧的合理部分），"
+        "note 写清改了什么、有无冲突修正\n"
+        "3. 完全不受影响的模块不要输出\n"
+        "4. 空模块只要新设定里有相关信息也要输出（相当于新建）\n\n"
+        '输出 JSON：{"modules": [{"point": "world_setting", "note": "改了什么/冲突修正说明", '
+        '"content": "该模块融合后的完整内容"}]}。只输出合法 JSON，不要任何其他文本。'
+    )
+    from backend.agents.base import chat_json
     result = await chat_json(
         messages=[{"role": "user", "content": prompt}],
         system_prompt=SORT_EDIT_PROMPT,
         temperature=0.3,
+        deep_thinking=True,
     )
 
-    if result.get("mode") == "conflict":
-        rows = []
-        for c in (result.get("conflicts") or [])[:3]:
-            if not isinstance(c, dict):
-                continue
-            old_s = (c.get("old_summary") or "").strip()
-            new_s = (c.get("new_summary") or "").strip()
-            if not old_s or not new_s:
-                continue
-            cur = await db.execute(
-                "INSERT INTO distill_conflicts (project_id, point, old_summary, new_summary, suggestion, new_content) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (project_id, pt, old_s[:400], new_s[:400],
-                 (c.get("suggestion") or "").strip()[:400],
-                 (c.get("new_content") or "").strip() or (existing["content"] or "")),
+    modules = []
+    for u in (result.get("modules") or [])[:8]:
+        if not isinstance(u, dict):
+            continue
+        pt = u.get("point")
+        if pt not in _MODULE_POINTS:
+            continue
+        merged = (u.get("content") or "").strip()
+        if len(merged) < 20 or merged == by_point.get(pt):
+            continue
+        modules.append({
+            "point": pt,
+            "label": POINT_LABELS.get(pt, pt),
+            "note": (u.get("note") or "").strip()[:200],
+            "content": merged,
+            "is_new": pt not in by_point or not by_point[pt].strip(),
+            "old_chars": len(by_point.get(pt) or ""),
+        })
+    if not modules:
+        return {"modules": [], "note": "新设定与总览各模块比对后没有需要变更的内容。"}
+    return {"modules": modules, "note": f"共 {len(modules)} 个模块建议更新，请逐个确认。"}
+
+
+@router.post("/projects/{project_id}/pin-apply")
+async def pin_apply(project_id: str, body: PinApplyBody):
+    """采纳确认后的模块：更新/新建对应点位，返回逐模块结果。"""
+    db = await get_db()
+    rows = await fetch_all(
+        db, "SELECT id, item_type FROM workspace_items WHERE project_id = ?", (project_id,))
+    ws_by_point = {}
+    for r in rows:
+        # 同一点位可能有多条（历史草稿）：优先已定稿那条
+        if r["item_type"] not in ws_by_point:
+            ws_by_point[r["item_type"]] = r["id"]
+
+    applied = []
+    for u in (body.modules or []):
+        pt = u.get("point")
+        content = (u.get("content") or "").strip()
+        if pt not in _MODULE_POINTS or len(content) < 20:
+            continue
+        if pt in ws_by_point:
+            await db.execute(
+                "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
+                (content, ws_by_point[pt]),
             )
-            rows.append({
-                "id": cur.lastrowid, "point": pt, "label": label,
-                "old_summary": old_s[:200], "new_summary": new_s[:200],
-                "suggestion": (c.get("suggestion") or "").strip()[:200],
-            })
+        else:
+            await db.execute(
+                "INSERT INTO workspace_items (id, project_id, item_type, status, title, content, sort_order) "
+                "VALUES (?, ?, ?, 'draft', ?, ?, 0)",
+                (str(uuid.uuid4()), project_id, pt, POINT_LABELS.get(pt, pt), content),
+            )
+        applied.append({"point": pt, "label": POINT_LABELS.get(pt, pt)})
+    if applied:
         await db.commit()
-        if rows:
-            # 核对卡同步写入 studio 对话：弹窗关掉后还能从对话里继续取舍
-            conv = await fetch_one(
-                db, "SELECT id FROM conversations WHERE project_id = ? AND point = '__studio__'", (project_id,))
-            if conv:
-                from backend.services import repo as _repo
-                card = json.dumps({
-                    "kind": "distill_review", "total_merged": 0, "conflicts": rows,
-                }, ensure_ascii=False)
-                await _repo.save_message(db, conv["id"], "assistant", card)
-                await db.commit()
-            return {"mode": "conflict", "conflicts": rows,
-                    "note": f"{label} 与现有设定有 {len(rows)} 处冲突，请核对取舍"}
-        # 冲突信息不完整时按合并兜底处理
-
-    merged = (result.get("merged_content") or "").strip()
-    if len(merged) < 20:
-        merged = content
-    await db.execute(
-        "UPDATE workspace_items SET content = ?, updated_at = datetime('now') WHERE id = ?",
-        (merged, existing["id"]),
-    )
-    await db.commit()
-    from backend.services import repo as _repo
-    await _repo.touch_project(db, project_id)
-    return {"mode": "merged", "note": (result.get("note") or f"已合并进现有{label}").strip()[:100]}
+        from backend.services import repo as _repo
+        await _repo.touch_project(db, project_id)
+    return {"ok": True, "applied": applied}
 
 
 @router.post("/projects/{project_id}/studio/build")
