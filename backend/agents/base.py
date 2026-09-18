@@ -101,8 +101,12 @@ async def _sleep_backoff(attempt: int) -> None:
 
 async def chat_stream(messages: list[dict], system_prompt: str | None = None,
                       model: str = "", temperature: float = 0.8,
-                      disable_thinking: bool = False):
+                      disable_thinking: bool = False,
+                      force_thinking: bool = False):
     """流式生成。yield (kind, text)，kind ∈ {'reasoning', 'content'}。
+
+    force_thinking=True 显式开思考（沉淀再分拣这类全局比对场景要最强思考）；
+    disable_thinking=True 显式关闭。两者都不传则跟随模型默认。
 
     首个 chunk 产出前失败会重试一次（含 usage 不确定的风险）；
     已经开始输出后失败则向上抛出，由调用方决定保留部分输出。
@@ -115,7 +119,11 @@ async def chat_stream(messages: list[dict], system_prompt: str | None = None,
     emitted = False
     for attempt in range(2):
         try:
-            extra = {"extra_body": {"thinking": {"type": "disabled"}}} if disable_thinking else {}
+            extra: dict = {}
+            if disable_thinking:
+                extra = {"extra_body": {"thinking": {"type": "disabled"}}}
+            elif force_thinking:
+                extra = {"extra_body": {"thinking": {"type": "enabled"}}}
             stream = await client.chat.completions.create(
                 model=model or DEFAULT_MODEL,
                 messages=full_messages,

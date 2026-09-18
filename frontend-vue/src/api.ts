@@ -148,6 +148,45 @@ export function pinRedistill(projectId: ID, content: string): Promise<{ modules:
   return request('POST', `/projects/${projectId}/pin-redistill`, { content })
 }
 
+/** 流式再分拣：思考过程逐段回调，结果/出错走 onResult/onError（ndjson 行协议） */
+export function pinRedistillStream(
+  projectId: ID,
+  content: string,
+  onThinking: (chunk: string) => void,
+  onResult: (r: { modules: PinModuleSuggestion[]; note: string }) => void,
+  onError: (msg: string) => void,
+): { abort: () => void } {
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', `${BASE}/projects/${projectId}/pin-redistill/stream`)
+  xhr.setRequestHeader('Content-Type', 'application/json')
+  let processed = 0
+  let pending = ''
+  let finished = false
+
+  const processLines = () => {
+    const newData = xhr.responseText.substring(processed)
+    processed = xhr.responseText.length
+    pending += newData
+    const lines = pending.split('\n')
+    pending = lines.pop() as string
+    for (const line of lines) {
+      if (!line.trim() || finished) continue
+      try {
+        const obj = JSON.parse(line)
+        if (obj.error) { finished = true; onError(obj.error); xhr.abort(); return }
+        if (obj.thinking) onThinking(obj.thinking)
+        if (obj.modules) onResult(obj)
+        if (obj.done) { finished = true }
+      } catch { /* 半行 JSON，下轮再试 */ }
+    }
+  }
+  xhr.onprogress = processLines
+  xhr.onload = () => { processLines(); if (!finished) onError('连接中断，请重试') }
+  xhr.onerror = () => { if (!finished) onError('网络错误，请重试') }
+  xhr.send(JSON.stringify({ content }))
+  return { abort: () => { finished = true; xhr.abort() } }
+}
+
 export function pinApply(
   projectId: ID,
   modules: { point: string; content: string }[],

@@ -483,18 +483,7 @@ class PinApplyBody(BaseModel):
 _MODULE_POINTS = ("story_core", "world_setting", "character_setting", "outline_reverse", "outline", "foreshadow")
 
 
-@router.post("/projects/{project_id}/pin-redistill")
-async def pin_redistill(project_id: str, body: PinRedistillBody):
-    """沉淀再分拣：新设定（选中对话）× 原设定（总览全部模块）→ 各模块融合版，等用户逐模块确认。
-
-    思考强度开到最高（deep_thinking）：需要跨六个模块全局比对，浅思考容易漏改。
-    只产出建议，不落库；采纳在 /pin-apply。
-    """
-    db = await get_db()
-    content = (body.content or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="沉淀内容为空")
-
+async def _pin_collect_existing(db, project_id: str) -> dict[str, str]:
     rows = await fetch_all(
         db,
         "SELECT item_type, content FROM workspace_items WHERE project_id = ? AND item_type IN ("
@@ -502,13 +491,15 @@ async def pin_redistill(project_id: str, body: PinRedistillBody):
         "AND status IN ('draft', 'finalized', 'locked') ORDER BY item_type",
         (project_id, *_MODULE_POINTS),
     )
-    by_point = {r["item_type"]: r["content"] or "" for r in rows}
+    return {r["item_type"]: r["content"] or "" for r in rows}
 
+
+def _pin_build_prompt(by_point: dict[str, str], content: str) -> str:
     old_block = "\n\n".join(
         f"【{POINT_LABELS.get(pt, pt)}】\n{(by_point.get(pt) or '（空，尚无内容）')[:4000]}"
         for pt in _MODULE_POINTS
     )
-    prompt = (
+    return (
         "你是设定总编。用户从对话里选中了一段内容要沉淀进故事设定。"
         "请以「新设定」（选中的对话）为一方、「原设定」（下方全部模块）为另一方做全局比对，"
         "重新产出每个受影响模块的完整融合版。\n\n"
@@ -523,14 +514,9 @@ async def pin_redistill(project_id: str, body: PinRedistillBody):
         '输出 JSON：{"modules": [{"point": "world_setting", "note": "改了什么/冲突修正说明", '
         '"content": "该模块融合后的完整内容"}]}。只输出合法 JSON，不要任何其他文本。'
     )
-    from backend.agents.base import chat_json
-    result = await chat_json(
-        messages=[{"role": "user", "content": prompt}],
-        system_prompt=SORT_EDIT_PROMPT,
-        temperature=0.3,
-        deep_thinking=True,
-    )
 
+
+def _pin_parse_modules(result: dict, by_point: dict[str, str]) -> list[dict]:
     modules = []
     for u in (result.get("modules") or [])[:8]:
         if not isinstance(u, dict):
@@ -549,9 +535,77 @@ async def pin_redistill(project_id: str, body: PinRedistillBody):
             "is_new": pt not in by_point or not by_point[pt].strip(),
             "old_chars": len(by_point.get(pt) or ""),
         })
+    return modules
+
+
+@router.post("/projects/{project_id}/pin-redistill")
+async def pin_redistill(project_id: str, body: PinRedistillBody):
+    """沉淀再分拣：新设定（选中对话）× 原设定（总览全部模块）→ 各模块融合版，等用户逐模块确认。
+
+    思考强度开到最高（deep_thinking）：需要跨六个模块全局比对，浅思考容易漏改。
+    只产出建议，不落库；采纳在 /pin-apply。（思考过程展示走 /pin-redistill/stream）
+    """
+    db = await get_db()
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="沉淀内容为空")
+
+    by_point = await _pin_collect_existing(db, project_id)
+    prompt = _pin_build_prompt(by_point, content)
+    from backend.agents.base import chat_json
+    result = await chat_json(
+        messages=[{"role": "user", "content": prompt}],
+        system_prompt=SORT_EDIT_PROMPT,
+        temperature=0.3,
+        deep_thinking=True,
+    )
+
+    modules = _pin_parse_modules(result, by_point)
     if not modules:
         return {"modules": [], "note": "新设定与总览各模块比对后没有需要变更的内容。"}
     return {"modules": modules, "note": f"共 {len(modules)} 个模块建议更新，请逐个确认。"}
+
+
+@router.post("/projects/{project_id}/pin-redistill/stream")
+async def pin_redistill_stream(project_id: str, body: PinRedistillBody):
+    """流式版再分拣：思考过程逐段推送（前端实时展示），结束后推 modules 结果。ndjson 行协议。"""
+    db = await get_db()
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="沉淀内容为空")
+    by_point = await _pin_collect_existing(db, project_id)
+    prompt = _pin_build_prompt(by_point, content)
+
+    import json as _json
+    from backend.agents.base import chat_stream, _strip_code_fence
+
+    async def gen():
+        acc = ""
+        try:
+            async for kind, chunk in chat_stream(
+                [{"role": "user", "content": prompt}],
+                system_prompt=SORT_EDIT_PROMPT,
+                temperature=0.3,
+                force_thinking=True,
+            ):
+                if kind == "reasoning":
+                    yield _json.dumps({"thinking": chunk}, ensure_ascii=False) + "\n"
+                else:
+                    acc += chunk
+            try:
+                result = json.loads(_strip_code_fence(acc))
+            except Exception as e:
+                yield _json.dumps({"error": f"结果解析失败：{str(e)[:120]}，请重试"}, ensure_ascii=False) + "\n"
+                return
+            modules = _pin_parse_modules(result, by_point)
+            note = ("新设定与总览各模块比对后没有需要变更的内容。" if not modules
+                    else f"共 {len(modules)} 个模块建议更新，请逐个确认。")
+            yield _json.dumps({"modules": modules, "note": note}, ensure_ascii=False) + "\n"
+            yield _json.dumps({"done": True}, ensure_ascii=False) + "\n"
+        except Exception as e:
+            yield _json.dumps({"error": f"再分拣失败：{str(e)[:150]}"}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.post("/projects/{project_id}/pin-apply")

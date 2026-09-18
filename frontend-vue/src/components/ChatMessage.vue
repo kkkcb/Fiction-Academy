@@ -141,12 +141,17 @@ const pinChosen = ref<Record<string, boolean>>({})
 const pinExpanded = ref<Record<string, boolean>>({})
 const pinNote = ref('')
 const pinApplied = ref(0)
+const pinThinking = ref('')
+let pinAbort: { abort: () => void } | null = null
 function onPin() {
   pinSuggestions.value = []
   pinApplied.value = 0
+  pinThinking.value = ''
   showPinModal.value = true
 }
 function closePin() {
+  pinAbort?.abort()
+  pinAbort = null
   showPinModal.value = false
 }
 function onEsc(e: KeyboardEvent) {
@@ -154,20 +159,28 @@ function onEsc(e: KeyboardEvent) {
 }
 onMounted(() => window.addEventListener('keydown', onEsc))
 onUnmounted(() => window.removeEventListener('keydown', onEsc))
-async function doPin() {
+function doPin() {
   if (!store.currentProjectId || pinSaving.value) return
   pinSaving.value = true
-  try {
-    const r = await api.pinRedistill(store.currentProjectId, m.value.content)
-    pinSuggestions.value = r.modules
-    pinNote.value = r.note
-    pinChosen.value = Object.fromEntries(r.modules.map(x => [x.point, true]))
-    pinExpanded.value = Object.fromEntries(r.modules.map(x => [x.point, false]))
-  } catch (e) {
-    alert(`再分拣失败：${(e as Error).message}`)
-  } finally {
-    pinSaving.value = false
-  }
+  pinThinking.value = ''
+  pinAbort = api.pinRedistillStream(
+    store.currentProjectId,
+    m.value.content,
+    chunk => { pinThinking.value += chunk },
+    r => {
+      pinSuggestions.value = r.modules
+      pinNote.value = r.note
+      pinChosen.value = Object.fromEntries(r.modules.map(x => [x.point, true]))
+      pinExpanded.value = Object.fromEntries(r.modules.map(x => [x.point, false]))
+      pinSaving.value = false
+      pinAbort = null
+    },
+    msg => {
+      pinSaving.value = false
+      pinAbort = null
+      alert(msg)
+    },
+  )
 }
 async function applyPin() {
   if (!store.currentProjectId) return
@@ -288,10 +301,14 @@ async function applyPin() {
             </div>
           </template>
 
-          <!-- 再分拣结果：逐模块确认 -->
+          <!-- 再分拣结果：逐模块确认（思考过程保留可回看） -->
           <template v-else-if="pinSuggestions.length">
             <h3>沉淀再分拣结果</h3>
             <p class="pin-hint">{{ pinNote }} 勾选要采纳的模块（点模块名展开看完整融合内容）。</p>
+            <details v-if="pinThinking" class="pin-thinking-details">
+              <summary>回看思考过程</summary>
+              <ThinkingBlock :text="pinThinking" :streaming="false" />
+            </details>
             <div class="pin-modules">
               <div v-for="x in pinSuggestions" :key="x.point" class="pin-module" :class="{ off: !pinChosen[x.point] }">
                 <label class="pin-module-head">
@@ -332,10 +349,12 @@ async function applyPin() {
             </div>
           </template>
 
-          <!-- 深度思考中 -->
+          <!-- 深度思考中：思考过程实时展示 -->
           <template v-else>
             <h3>深度思考中…</h3>
-            <div class="pin-hint">正在把这条消息与总览全部模块做全局比对（思考强度最高，跨模块联动也会检查），稍等。</div>
+            <div class="pin-hint">正在把这条消息与总览全部模块做全局比对（思考强度最高，跨模块联动也会检查），下方是它的思考过程。</div>
+            <ThinkingBlock v-if="pinThinking" :text="pinThinking" :streaming="true" />
+            <div v-else class="pin-hint">等待模型首批输出…</div>
           </template>
         </div>
       </div>
@@ -372,6 +391,10 @@ async function applyPin() {
   margin-top: 8px; padding: 10px; border-radius: 8px;
   background: var(--bg-secondary); font-size: 12px; line-height: 1.7;
   max-height: 320px; overflow-y: auto;
+}
+.pin-thinking-details { margin-bottom: 10px; }
+.pin-thinking-details summary {
+  font-size: 12px; color: var(--text-tertiary); cursor: pointer; user-select: none;
 }
 /* 可点选项：整行可选卡（完整文本 + 单选圆点），点选 → 确认 → 一次发送 */
 .msg-choices {

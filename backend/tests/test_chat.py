@@ -327,3 +327,32 @@ async def test_pin_redistill_and_apply(client, project_id, llm_calls, monkeypatc
     assert r3.status_code == 200
     items3 = (await client.get(f"/api/projects/{project_id}/workspace")).json()
     assert any(i["item_type"] == "foreshadow" and i["status"] == "draft" for i in items3)
+
+
+@pytest.mark.asyncio
+async def test_pin_redistill_stream_emits_thinking_and_modules(client, project_id, monkeypatch):
+    """流式再分拣：思考片段逐行推送，结束推 modules 结果。"""
+    ensure = await client.post(f"/api/projects/{project_id}/studio/ensure")
+    assert ensure.status_code == 200
+
+    async def fake_stream(messages, system_prompt=None, model="", temperature=0.8,
+                          disable_thinking=False, force_thinking=False, **kw):
+        assert force_thinking is True  # 思考强度拉满
+        yield ("reasoning", "先比对故事核…")
+        yield ("reasoning", "再查世界观联动…")
+        yield ("content", '```json\n{"modules": [{"point": "story_core", "note": "补充核心命题", '
+                          '"content": "无善恶只有对立；生命的循环（死亡与馈赠同体）。"}]}\n```')
+
+    import backend.agents.base as base_module
+    monkeypatch.setattr(base_module, "chat_stream", fake_stream)
+
+    async with client.stream("POST", f"/api/projects/{project_id}/pin-redistill/stream",
+                             json={"content": "聊到生命的循环：死亡与馈赠同体。"}) as resp:
+        assert resp.status_code == 200
+        body = (await resp.aread()).decode("utf-8")
+    lines = [__import__("json").loads(l) for l in body.splitlines() if l.strip()]
+    thinkings = [l["thinking"] for l in lines if "thinking" in l]
+    assert "".join(thinkings) == "先比对故事核…再查世界观联动…"
+    result = next(l for l in lines if "modules" in l)
+    assert result["modules"][0]["point"] == "story_core"
+    assert any(l.get("done") for l in lines)
