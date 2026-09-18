@@ -155,69 +155,9 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onCtxEsc)
 })
 
-const showPinModal = ref(false)
-const pinSaving = ref(false)
-// 沉淀=全模块再分拣：深度思考比对 → 各模块融合建议 → 勾选确认写入
-const pinSuggestions = ref<import('../api').PinModuleSuggestion[]>([])
-const pinChosen = ref<Record<string, boolean>>({})
-const pinExpanded = ref<Record<string, boolean>>({})
-const pinNote = ref('')
-const pinApplied = ref(0)
-const pinThinking = ref('')
-let pinAbort: { abort: () => void } | null = null
+// 沉淀走全局面板（store.startPinRedistill）：思考流/结果/确认都在面板里，关面板不打断
 function onPin() {
-  pinSuggestions.value = []
-  pinApplied.value = 0
-  pinThinking.value = ''
-  showPinModal.value = true
-}
-function closePin() {
-  pinAbort?.abort()
-  pinAbort = null
-  showPinModal.value = false
-}
-function onEsc(e: KeyboardEvent) {
-  if (e.key === 'Escape' && showPinModal.value) closePin()
-}
-onMounted(() => window.addEventListener('keydown', onEsc))
-onUnmounted(() => window.removeEventListener('keydown', onEsc))
-function doPin() {
-  if (!store.currentProjectId || pinSaving.value) return
-  pinSaving.value = true
-  pinThinking.value = ''
-  pinAbort = api.pinRedistillStream(
-    store.currentProjectId,
-    m.value.content,
-    chunk => { pinThinking.value += chunk },
-    r => {
-      pinSuggestions.value = r.modules
-      pinNote.value = r.note
-      pinChosen.value = Object.fromEntries(r.modules.map(x => [x.point, true]))
-      pinExpanded.value = Object.fromEntries(r.modules.map(x => [x.point, false]))
-      pinSaving.value = false
-      pinAbort = null
-    },
-    msg => {
-      pinSaving.value = false
-      pinAbort = null
-      alert(msg)
-    },
-  )
-}
-async function applyPin() {
-  if (!store.currentProjectId) return
-  const picked = pinSuggestions.value.filter(x => pinChosen.value[x.point])
-  if (!picked.length) return
-  pinSaving.value = true
-  try {
-    const r = await api.pinApply(store.currentProjectId, picked.map(x => ({ point: x.point, content: x.content })))
-    pinApplied.value = r.applied.length
-    store.fetchWorkspaceItems(store.currentProjectId)
-  } catch (e) {
-    alert(`写入失败：${(e as Error).message}`)
-  } finally {
-    pinSaving.value = false
-  }
+  store.startPinRedistill(m.value.content)
 }
 </script>
 
@@ -342,76 +282,6 @@ async function applyPin() {
         </div>
       </div>
     </Teleport>
-    <Teleport to="body">
-      <div v-if="showPinModal" class="modal-overlay show" @click.self="closePin">
-        <div class="modal-card pin-modal">
-          <!-- 已采纳完成 -->
-          <template v-if="pinApplied">
-            <h3>沉淀完成</h3>
-            <p class="pin-hint">已按你的确认更新 {{ pinApplied }} 个模块，右侧总览即时生效。</p>
-            <div class="modal-actions">
-              <button class="btn btn-primary" @click="closePin">好</button>
-            </div>
-          </template>
-
-          <!-- 再分拣结果：逐模块确认（思考过程保留可回看） -->
-          <template v-else-if="pinSuggestions.length">
-            <h3>沉淀再分拣结果</h3>
-            <p class="pin-hint">{{ pinNote }} 勾选要采纳的模块（点模块名展开看完整融合内容）。</p>
-            <details v-if="pinThinking" class="pin-thinking-details">
-              <summary>回看思考过程</summary>
-              <ThinkingBlock :text="pinThinking" :streaming="false" />
-            </details>
-            <div class="pin-modules">
-              <div v-for="x in pinSuggestions" :key="x.point" class="pin-module" :class="{ off: !pinChosen[x.point] }">
-                <label class="pin-module-head">
-                  <input
-                    type="checkbox"
-                    :checked="pinChosen[x.point]"
-                    @change="pinChosen = { ...pinChosen, [x.point]: ($event.target as HTMLInputElement).checked }"
-                  />
-                  <span class="pin-module-label">{{ x.label }}</span>
-                  <span v-if="x.is_new" class="pin-new-badge">新建</span>
-                  <span v-else class="pin-old-chars">{{ x.old_chars }} 字 → {{ x.content.length }} 字</span>
-                  <span class="pin-flex"></span>
-                  <button class="btn-link" @click.prevent="pinExpanded = { ...pinExpanded, [x.point]: !pinExpanded[x.point] }">
-                    {{ pinExpanded[x.point] ? '收起' : '展开' }}
-                  </button>
-                </label>
-                <p v-if="x.note" class="pin-module-note">{{ x.note }}</p>
-                <div v-if="pinExpanded[x.point]" class="markdown-body pin-module-content" v-html="formatReceiptMd(x.content)"></div>
-              </div>
-            </div>
-            <div class="modal-actions">
-              <button class="btn" :disabled="pinSaving" @click="closePin">取消（不写入）</button>
-              <button class="btn btn-primary" :disabled="pinSaving || !pinSuggestions.some(x => pinChosen[x.point])" @click="applyPin">
-                {{ pinSaving ? '写入中…' : `采纳所选（${pinSuggestions.filter(x => pinChosen[x.point]).length}）` }}
-              </button>
-            </div>
-          </template>
-
-          <!-- 初始：说明 + 开始 -->
-          <template v-else-if="!pinSaving">
-            <h3>沉淀到设定</h3>
-            <div class="pin-hint">
-              以这条消息为<b>新设定</b>、总览全部模块为<b>原设定</b>，深度思考全局比对后重新产出各模块的融合版，由你逐模块确认后写入。
-            </div>
-            <div class="modal-actions">
-              <button class="btn" @click="closePin">取消</button>
-              <button class="btn btn-primary" @click="doPin">开始再分拣（深度思考）</button>
-            </div>
-          </template>
-
-          <!-- 深度思考中：思考过程实时展示 -->
-          <template v-else>
-            <h3>深度思考中…</h3>
-            <div class="pin-hint">正在把这条消息与总览全部模块做全局比对（思考强度最高，跨模块联动也会检查），下方是它的思考过程。</div>
-            <ThinkingBlock v-if="pinThinking" :text="pinThinking" :streaming="true" />
-            <div v-else class="pin-hint">等待模型首批输出…</div>
-          </template>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -421,33 +291,6 @@ async function applyPin() {
   color: var(--text-tertiary);
   font-weight: 400;
   line-height: 1.6;
-}
-.pin-modal { max-width: min(680px, 92vw); max-height: 86vh; overflow-y: auto; }
-.pin-modules { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 12px; }
-.pin-module {
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  padding: 8px 12px;
-  transition: opacity 0.15s;
-}
-.pin-module.off { opacity: 0.45; }
-.pin-module-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.pin-module-label { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.pin-new-badge {
-  font-size: 10.5px; color: var(--accent); background: var(--accent-light);
-  border-radius: var(--radius-full); padding: 1px 8px;
-}
-.pin-old-chars { font-size: 11px; color: var(--text-tertiary); }
-.pin-flex { flex: 1; }
-.pin-module-note { margin: 6px 0 0; font-size: 12px; color: var(--text-secondary); }
-.pin-module-content {
-  margin-top: 8px; padding: 10px; border-radius: 8px;
-  background: var(--bg-secondary); font-size: 12px; line-height: 1.7;
-  max-height: 320px; overflow-y: auto;
-}
-.pin-thinking-details { margin-bottom: 10px; }
-.pin-thinking-details summary {
-  font-size: 12px; color: var(--text-tertiary); cursor: pointer; user-select: none;
 }
 
 /* 请求输入查看弹窗 */

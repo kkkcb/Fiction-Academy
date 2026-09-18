@@ -512,6 +512,75 @@ export const useAppStore = defineStore('app', () => {
     fetchDistillDigest(projectId).catch(() => {})
   }
 
+  // ===== 沉淀面板（全局）：再分拣思考流/结果/逐模块确认，关面板不打断 =====
+  const pinPanelOpen = ref(false)
+  const pinStatus = ref<'idle' | 'running' | 'result' | 'error' | 'applied'>('idle')
+  const pinThinking = ref('')
+  const pinSuggestions = ref<api.PinModuleSuggestion[]>([])
+  const pinNote = ref('')
+  const pinChosen = ref<Record<string, boolean>>({})
+  const pinExpanded = ref<Record<string, boolean>>({})
+  const pinAppliedCount = ref(0)
+  const pinError = ref('')
+  let pinAbortFn: { abort: () => void } | null = null
+
+  const pinActivity = computed(() => pinStatus.value === 'running' || pinStatus.value === 'result')
+
+  function togglePinPanel(open?: boolean) {
+    pinPanelOpen.value = open ?? !pinPanelOpen.value
+  }
+
+  function startPinRedistill(content: string) {
+    if (!currentProjectId.value || pinStatus.value === 'running') return
+    pinStatus.value = 'running'
+    pinThinking.value = ''
+    pinSuggestions.value = []
+    pinAppliedCount.value = 0
+    pinError.value = ''
+    pinPanelOpen.value = true
+    pinAbortFn = api.pinRedistillStream(
+      currentProjectId.value,
+      content,
+      chunk => { pinThinking.value += chunk },
+      r => {
+        pinSuggestions.value = r.modules
+        pinNote.value = r.note
+        pinChosen.value = Object.fromEntries(r.modules.map(x => [x.point, true]))
+        pinExpanded.value = Object.fromEntries(r.modules.map(x => [x.point, false]))
+        pinStatus.value = 'result'
+        pinAbortFn = null
+      },
+      msg => {
+        pinError.value = msg
+        pinStatus.value = 'error'
+        pinAbortFn = null
+      },
+    )
+  }
+
+  function abortPin() {
+    pinAbortFn?.abort()
+    pinAbortFn = null
+    pinStatus.value = 'idle'
+    pinThinking.value = ''
+    pinSuggestions.value = []
+  }
+
+  async function applyPin() {
+    if (!currentProjectId.value) return
+    const picked = pinSuggestions.value.filter(x => pinChosen.value[x.point])
+    if (!picked.length) return
+    try {
+      const r = await api.pinApply(currentProjectId.value, picked.map(x => ({ point: x.point, content: x.content })))
+      pinAppliedCount.value = r.applied.length
+      pinStatus.value = 'applied'
+      await fetchWorkspaceItems(currentProjectId.value)
+    } catch (e) {
+      pinError.value = (e as Error).message
+      pinStatus.value = 'error'
+    }
+  }
+
   // ===== distill 分拣摘要（右侧总览：待取舍冲突 + 最近一批取舍结果）=====
   const distillDigest = ref<DistillDigest | null>(null)
 
@@ -1406,6 +1475,20 @@ export const useAppStore = defineStore('app', () => {
     fetchWorkspaceItems,
     distillDigest,
     fetchDistillDigest,
+    pinPanelOpen,
+    pinStatus,
+    pinThinking,
+    pinSuggestions,
+    pinNote,
+    pinChosen,
+    pinExpanded,
+    pinAppliedCount,
+    pinError,
+    pinActivity,
+    togglePinPanel,
+    startPinRedistill,
+    abortPin,
+    applyPin,
     createWorkspaceItem,
     updateItemStatus,
     deleteWorkspaceItem,

@@ -6,6 +6,7 @@ import ProjectsPage from './components/ProjectsPage.vue'
 import WorkspacePage from './components/WorkspacePage.vue'
 import WritingPage from './components/WritingPage.vue'
 import ToastHost from './components/ToastHost.vue'
+import PinPanel from './components/PinPanel.vue'
 
 const store = useAppStore()
 const { route } = storeToRefs(store)
@@ -22,4 +23,5 @@ onMounted(() => {
   <WritingPage v-else-if="route === 'writing'" />
   <WorkspacePage v-else />
   <ToastHost />
+  <PinPanel />
 </template>
