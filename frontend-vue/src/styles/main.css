@@ -609,7 +609,8 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-8) var(--space-8);
-  scroll-behavior: smooth;
+  /* 不设 scroll-behavior:smooth——它让所有程序化滚动（含 scrollTop 赋值）都变成滑行动画，
+     进入对话的置底会被观察成"刷新滑动"；全部瞬时，流式跟随也更稳 */
 }
 
 .chat-input-area {
