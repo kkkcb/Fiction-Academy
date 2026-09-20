@@ -33,7 +33,13 @@ export function useAutoScroll(): AutoScrollHandle {
     const node = el.value
     if (!node) return
     if (force || isNearBottom.value) {
-      node.scrollTop = node.scrollHeight
+      if (force) {
+        // 瞬时落位：显式 behavior:'auto' 覆盖容器的 CSS scroll-behavior:smooth，
+        // 否则进对话的强制置底会变成一段滑动动画且中途被布局变化打断
+        node.scrollTo({ top: node.scrollHeight, behavior: 'auto' })
+      } else {
+        node.scrollTop = node.scrollHeight
+      }
     }
   }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch, onMounted, nextTick } from 'vue'
+import { computed, watch, onMounted, nextTick, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import ChatMessage from './ChatMessage.vue'
 import ConsultFlow from './ConsultFlow.vue'
@@ -52,32 +52,43 @@ watch(() => messages.value.length, async () => {
   await nextTick()
   scrollToBottom()
 })
-// 进入对话：加载完成直接强制置底（历史消息再多也落在最新一条）
-watch(messagesLoading, async (v) => {
-  if (!v && messages.value.length) {
-    await nextTick()
-    reset()
-    scrollToBottom(true)
-  }
-})
-// 切换对话：同样置底
-watch(() => store.currentConversationId, async () => {
-  await nextTick()
+
+// 进入/切换对话：历史渲染期间抑制入场动画（否则整屏消息逐个淡入像"刷新"），
+// 布局稳定（双 rAF + 延迟复滚兜底字体/代码高亮等晚到的布局变化）后瞬时置底
+const suppressAnim = ref(true)
+let settleTimer: ReturnType<typeof setTimeout> | null = null
+
+function settleToBottom() {
+  suppressAnim.value = true
   reset()
   scrollToBottom(true)
+  requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom(true)))
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = setTimeout(() => {
+    scrollToBottom(true)
+    suppressAnim.value = false
+  }, 220)
+}
+
+watch(messagesLoading, (v) => {
+  if (!v && messages.value.length) settleToBottom()
 })
+watch(() => store.currentConversationId, () => {
+  if (messages.value.length) settleToBottom()
+  else suppressAnim.value = false
+})
+onMounted(() => settleToBottom())
+
 watch(() => streamingContent.value, () => scrollToBottom())
 watch(() => streamingThinking.value, () => scrollToBottom())
 watch(() => consultFlow.value, () => scrollToBottom(), { deep: true })
 watch(() => isStreaming.value, (v) => {
   if (v) { reset(); scrollToBottom(true) }
 })
-
-onMounted(() => scrollToBottom(true))
 </script>
 
 <template>
-  <div ref="el" class="chat-messages" @scroll="onScroll">
+  <div ref="el" class="chat-messages" :class="{ 'suppress-anim': suppressAnim }" @scroll="onScroll">
     <div v-if="isEmpty" class="empty-state">
       <PenLine v-if="isPoint" class="empty-icon" :size="30" :stroke-width="1.5" />
       <MessageSquare v-else class="empty-icon" :size="30" :stroke-width="1.5" />
@@ -125,3 +136,11 @@ onMounted(() => scrollToBottom(true))
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 历史消息初次渲染不做入场动画：几十条一起淡入像整屏刷新，且动画期间布局在变 */
+.suppress-anim :deep(.msg),
+.suppress-anim :deep(.empty-state) {
+  animation: none;
+}
+</style>
