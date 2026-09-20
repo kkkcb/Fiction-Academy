@@ -62,9 +62,23 @@ function toggleExpand(point: string) {
           <p v-else class="pin-tip">等待模型首批输出…</p>
         </template>
 
-        <!-- 出错 -->
+        <!-- 出错：已生成内容保留，可断点续传 -->
         <template v-else-if="pinStatus === 'error'">
           <p class="pin-error">{{ pinError }}</p>
+          <p class="pin-tip">
+            思考过程（{{ pinThinking.length }} 字）与已生成的结果内容都已保留——点「继续生成」让模型从中断处接着写，不会从头重来。
+          </p>
+          <details v-if="pinThinking" class="pin-think-back">
+            <summary>回看已保留的思考过程</summary>
+            <ThinkingBlock :text="pinThinking" :streaming="false" />
+          </details>
+          <div class="pin-panel-foot">
+            <span class="pin-flex"></span>
+            <button class="btn btn-sm" @click="store.retryPinFromScratch()">重新开始</button>
+            <button class="btn btn-sm btn-primary" @click="store.resumePin()">
+              <Loader2 :size="12" /> 继续生成（从断点）
+            </button>
+          </div>
         </template>
 
         <!-- 结果：逐模块确认 -->

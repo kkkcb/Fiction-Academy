@@ -522,12 +522,40 @@ export const useAppStore = defineStore('app', () => {
   const pinExpanded = ref<Record<string, boolean>>({})
   const pinAppliedCount = ref(0)
   const pinError = ref('')
+  // 断点续传：网络中断时保留已生成内容，重试让模型接着写而不是重来
+  const pinPartial = ref('')
+  const pinSourceContent = ref('')
   let pinAbortFn: { abort: () => void } | null = null
 
   const pinActivity = computed(() => pinStatus.value === 'running' || pinStatus.value === 'result')
 
   function togglePinPanel(open?: boolean) {
     pinPanelOpen.value = open ?? !pinPanelOpen.value
+  }
+
+  function _runPinStream(resume: string) {
+    pinAbortFn = api.pinRedistillStream(
+      currentProjectId.value!,
+      pinSourceContent.value,
+      chunk => { pinThinking.value += chunk },
+      () => {},
+      r => {
+        pinSuggestions.value = r.modules
+        pinNote.value = r.note
+        pinChosen.value = Object.fromEntries(r.modules.map(x => [x.point, true]))
+        pinExpanded.value = Object.fromEntries(r.modules.map(x => [x.point, false]))
+        pinStatus.value = 'result'
+        pinPartial.value = ''
+        pinAbortFn = null
+      },
+      (msg, partial) => {
+        pinError.value = msg
+        pinPartial.value = partial || pinPartial.value
+        pinStatus.value = 'error'
+        pinAbortFn = null
+      },
+      resume,
+    )
   }
 
   function startPinRedistill(content: string) {
@@ -537,25 +565,28 @@ export const useAppStore = defineStore('app', () => {
     pinSuggestions.value = []
     pinAppliedCount.value = 0
     pinError.value = ''
+    pinPartial.value = ''
+    pinSourceContent.value = content
     pinPanelOpen.value = true
-    pinAbortFn = api.pinRedistillStream(
-      currentProjectId.value,
-      content,
-      chunk => { pinThinking.value += chunk },
-      r => {
-        pinSuggestions.value = r.modules
-        pinNote.value = r.note
-        pinChosen.value = Object.fromEntries(r.modules.map(x => [x.point, true]))
-        pinExpanded.value = Object.fromEntries(r.modules.map(x => [x.point, false]))
-        pinStatus.value = 'result'
-        pinAbortFn = null
-      },
-      msg => {
-        pinError.value = msg
-        pinStatus.value = 'error'
-        pinAbortFn = null
-      },
-    )
+    _runPinStream('')
+  }
+
+  /** 从断点继续：保留思考与已生成内容，模型接着写 */
+  function resumePin() {
+    if (!currentProjectId.value || pinStatus.value === 'running') return
+    pinStatus.value = 'running'
+    pinError.value = ''
+    pinThinking.value += '\n\n—— 网络中断，从断点继续 ——\n\n'
+    _runPinStream(pinPartial.value)
+  }
+
+  function retryPinFromScratch() {
+    if (!currentProjectId.value || pinStatus.value === 'running') return
+    pinStatus.value = 'running'
+    pinError.value = ''
+    pinPartial.value = ''
+    pinThinking.value = ''
+    _runPinStream('')
   }
 
   function abortPin() {
@@ -1487,6 +1518,8 @@ export const useAppStore = defineStore('app', () => {
     pinActivity,
     togglePinPanel,
     startPinRedistill,
+    resumePin,
+    retryPinFromScratch,
     abortPin,
     applyPin,
     createWorkspaceItem,

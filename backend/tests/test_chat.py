@@ -374,3 +374,53 @@ async def test_chat_reply_persists_request_json(client, project_id, llm_calls):
     # 用户消息不留存（它本身不是请求）
     user = next(m for m in msgs if m["role"] == "user")
     assert not user.get("request_json")
+
+
+@pytest.mark.asyncio
+async def test_pin_redistill_stream_resume_after_network_error(client, project_id, monkeypatch):
+    """网络中断不丢内容：错误行带 partial；带 resume_content 重试时模型接着写，前后拼成完整结果。"""
+    ensure = await client.post(f"/api/projects/{project_id}/studio/ensure")
+    assert ensure.status_code == 200
+
+    partial_json = '{"modules": [{"point": "story_core", "note": "补充核心", '
+    continuation = '"content": "无善恶只有对立；生命的循环，死亡与馈赠同体，群像自然生长。"}]}'
+
+    # 外部捕获每次调用收到的 messages（生成器内部 assert 会被端点吞成错误行）
+    seen_calls: list[list[dict]] = []
+
+    async def fake_stream(messages, system_prompt=None, model="", temperature=0.8,
+                          disable_thinking=False, force_thinking=False, **kw):
+        seen_calls.append([{"role": m["role"], "content": m["content"]} for m in messages])
+        if len(seen_calls) == 1:
+            yield ("reasoning", "比对中…")
+            yield ("content", partial_json)
+            raise RuntimeError("simulated network drop")
+        yield ("content", continuation)
+
+    import backend.agents.base as base_module
+    monkeypatch.setattr(base_module, "chat_stream", fake_stream)
+
+    async with client.stream("POST", f"/api/projects/{project_id}/pin-redistill/stream",
+                             json={"content": "生命的循环。"}) as resp:
+        body1 = (await resp.aread()).decode("utf-8")
+    lines1 = [json.loads(l) for l in body1.splitlines() if l.strip()]
+    err = next(l for l in lines1 if "error" in l)
+    assert "网络中断" in err["error"]
+    assert err["partial"] == partial_json  # 已生成内容交还前端
+
+    async with client.stream("POST", f"/api/projects/{project_id}/pin-redistill/stream",
+                             json={"content": "生命的循环。", "resume_content": partial_json}) as resp:
+        body2 = (await resp.aread()).decode("utf-8")
+    lines2 = [json.loads(l) for l in body2.splitlines() if l.strip()]
+
+    # 续传调用：prompt + 已有部分 + 继续指令 三条消息
+    assert len(seen_calls) == 2, f"chat_stream 调用次数: {len(seen_calls)}"
+    roles = [m["role"] for m in seen_calls[1]]
+    assert roles == ["user", "assistant", "user"], f"续传消息角色: {roles}"
+    assert partial_json.strip() in seen_calls[1][1]["content"], "断点内容未回传给模型"
+    assert "无缝继续" in seen_calls[1][2]["content"], "继续指令缺失"
+
+    result = next(l for l in lines2 if "modules" in l)
+    assert result["modules"][0]["point"] == "story_core"
+    assert "生命的循环" in result["modules"][0]["content"]  # 前后拼接成完整结果
+    assert any(l.get("done") for l in lines2)

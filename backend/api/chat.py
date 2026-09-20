@@ -473,6 +473,8 @@ async def distill_conflicts_digest(project_id: str):
 class PinRedistillBody(BaseModel):
     """全模块再分拣：content = 选中的对话（新设定），与总览全部模块（原设定）两输入比对。"""
     content: str
+    # 断点续传：上次网络中断时模型已输出的部分（JSON 前缀），让模型从中断处接着写
+    resume_content: str = ""
 
 
 class PinApplyBody(BaseModel):
@@ -568,7 +570,11 @@ async def pin_redistill(project_id: str, body: PinRedistillBody):
 
 @router.post("/projects/{project_id}/pin-redistill/stream")
 async def pin_redistill_stream(project_id: str, body: PinRedistillBody):
-    """流式版再分拣：思考过程逐段推送（前端实时展示），结束后推 modules 结果。ndjson 行协议。"""
+    """流式版再分拣：思考/内容增量逐段推送，结束推 modules 结果。ndjson 行协议。
+
+    网络中断不丢已生成内容：错误行带 partial（服务端积累的 JSON 前缀），
+    前端带着它调 resume_content 续传，模型从中断处无缝接着输出。
+    """
     db = await get_db()
     content = (body.content or "").strip()
     if not content:
@@ -576,14 +582,25 @@ async def pin_redistill_stream(project_id: str, body: PinRedistillBody):
     by_point = await _pin_collect_existing(db, project_id)
     prompt = _pin_build_prompt(by_point, content)
 
+    resume = (body.resume_content or "").strip()
+    messages = [{"role": "user", "content": prompt}]
+    if resume:
+        messages += [
+            {"role": "assistant", "content": resume[:12000]},
+            {"role": "user", "content": (
+                "刚才你的输出因网络中断停在了上面。请从中断处**无缝继续**输出剩余部分："
+                "不要重复已输出的内容、不要道歉或解释、不要重新开头，直接接着写完整个 JSON。"
+            )},
+        ]
+
     import json as _json
     from backend.agents.base import chat_stream, _strip_code_fence
 
     async def gen():
-        acc = ""
+        acc = resume  # 断点续传时，完整结果 = 已有部分 + 本轮新增
         try:
             async for kind, chunk in chat_stream(
-                [{"role": "user", "content": prompt}],
+                messages,
                 system_prompt=SORT_EDIT_PROMPT,
                 temperature=0.3,
                 force_thinking=True,
@@ -592,10 +609,14 @@ async def pin_redistill_stream(project_id: str, body: PinRedistillBody):
                     yield _json.dumps({"thinking": chunk}, ensure_ascii=False) + "\n"
                 else:
                     acc += chunk
+                    yield _json.dumps({"delta": chunk}, ensure_ascii=False) + "\n"
             try:
                 result = json.loads(_strip_code_fence(acc))
             except Exception as e:
-                yield _json.dumps({"error": f"结果解析失败：{str(e)[:120]}，请重试"}, ensure_ascii=False) + "\n"
+                yield _json.dumps({
+                    "error": f"结果解析失败：{str(e)[:120]}，可点「继续生成」让模型补完",
+                    "partial": acc,
+                }, ensure_ascii=False) + "\n"
                 return
             modules = _pin_parse_modules(result, by_point)
             note = ("新设定与总览各模块比对后没有需要变更的内容。" if not modules
@@ -603,7 +624,11 @@ async def pin_redistill_stream(project_id: str, body: PinRedistillBody):
             yield _json.dumps({"modules": modules, "note": note}, ensure_ascii=False) + "\n"
             yield _json.dumps({"done": True}, ensure_ascii=False) + "\n"
         except Exception as e:
-            yield _json.dumps({"error": f"再分拣失败：{str(e)[:150]}"}, ensure_ascii=False) + "\n"
+            # 中断也要把已有内容交还前端，供「继续生成」续传
+            yield _json.dumps({
+                "error": f"网络中断：{str(e)[:120]}。已生成的内容已保留，可继续",
+                "partial": acc,
+            }, ensure_ascii=False) + "\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 

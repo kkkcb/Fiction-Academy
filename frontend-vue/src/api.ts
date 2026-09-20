@@ -148,13 +148,16 @@ export function pinRedistill(projectId: ID, content: string): Promise<{ modules:
   return request('POST', `/projects/${projectId}/pin-redistill`, { content })
 }
 
-/** 流式再分拣：思考过程逐段回调，结果/出错走 onResult/onError（ndjson 行协议） */
+/** 流式再分拣：思考/内容增量逐段回调，结果/出错走 onResult/onError（ndjson 行协议）。
+ * 出错时 onError 附带服务端已积累的部分（partial），供断点续传。 */
 export function pinRedistillStream(
   projectId: ID,
   content: string,
   onThinking: (chunk: string) => void,
+  onDelta: (chunk: string) => void,
   onResult: (r: { modules: PinModuleSuggestion[]; note: string }) => void,
-  onError: (msg: string) => void,
+  onError: (msg: string, partial: string) => void,
+  resumeContent = '',
 ): { abort: () => void } {
   const xhr = new XMLHttpRequest()
   xhr.open('POST', `${BASE}/projects/${projectId}/pin-redistill/stream`)
@@ -162,6 +165,7 @@ export function pinRedistillStream(
   let processed = 0
   let pending = ''
   let finished = false
+  let clientPartial = resumeContent
 
   const processLines = () => {
     const newData = xhr.responseText.substring(processed)
@@ -173,17 +177,32 @@ export function pinRedistillStream(
       if (!line.trim() || finished) continue
       try {
         const obj = JSON.parse(line)
-        if (obj.error) { finished = true; onError(obj.error); xhr.abort(); return }
+        if (obj.error) {
+          finished = true
+          // 服务端的 partial 更权威（含本轮 delta 前的积累），客户端积累兜底
+          onError(obj.error, typeof obj.partial === 'string' ? obj.partial : clientPartial)
+          xhr.abort()
+          return
+        }
         if (obj.thinking) onThinking(obj.thinking)
+        if (obj.delta) { clientPartial += obj.delta; onDelta(obj.delta) }
         if (obj.modules) onResult(obj)
         if (obj.done) { finished = true }
       } catch { /* 半行 JSON，下轮再试 */ }
     }
   }
   xhr.onprogress = processLines
-  xhr.onload = () => { processLines(); if (!finished) onError('连接中断，请重试') }
-  xhr.onerror = () => { if (!finished) onError('网络错误，请重试') }
-  xhr.send(JSON.stringify({ content }))
+  xhr.onload = () => {
+    processLines()
+    if (!finished) {
+      // 连接中断且没有错误行：客户端积累的内容就是断点
+      onError('网络错误，已生成的内容已保留', clientPartial)
+    }
+  }
+  xhr.onerror = () => {
+    if (!finished) onError('网络错误，已生成的内容已保留', clientPartial)
+  }
+  xhr.send(JSON.stringify({ content, resume_content: resumeContent }))
   return { abort: () => { finished = true; xhr.abort() } }
 }
 
