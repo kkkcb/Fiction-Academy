@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch, onMounted } from 'vue'
+import { computed, watch, onMounted, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import ChatMessage from './ChatMessage.vue'
 import ConsultFlow from './ConsultFlow.vue'
@@ -47,7 +47,25 @@ function handleRegenerate() {
   store.regenerateMessage(store.currentConversationId)
 }
 
-watch(() => messages.value.length, () => scrollToBottom())
+// 消息条数变化要等 DOM 渲染完再滚（watch 默认 pre-flush，滚的是旧高度，会停在半路）
+watch(() => messages.value.length, async () => {
+  await nextTick()
+  scrollToBottom()
+})
+// 进入对话：加载完成直接强制置底（历史消息再多也落在最新一条）
+watch(messagesLoading, async (v) => {
+  if (!v && messages.value.length) {
+    await nextTick()
+    reset()
+    scrollToBottom(true)
+  }
+})
+// 切换对话：同样置底
+watch(() => store.currentConversationId, async () => {
+  await nextTick()
+  reset()
+  scrollToBottom(true)
+})
 watch(() => streamingContent.value, () => scrollToBottom())
 watch(() => streamingThinking.value, () => scrollToBottom())
 watch(() => consultFlow.value, () => scrollToBottom(), { deep: true })
