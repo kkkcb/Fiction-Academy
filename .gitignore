@@ -31,9 +31,7 @@ logs/
 
 # Runtime data
 data/*
-!data/fiction_academy.db
 *.db
-!data/fiction_academy.db
 
 # Competitor repos (cloned, already public elsewhere)
 competitors/repos/
