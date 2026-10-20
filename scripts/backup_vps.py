@@ -16,7 +16,7 @@ BACKUP_DIR = os.path.join(ROOT, "backups")
 LOG_FILE = os.path.join(BACKUP_DIR, "backup.log")
 PASS_FILE = os.path.join(ROOT, ".vps-pass")
 
-VPS_IP = "YOUR_VPS_IP"
+VPS_IP = os.environ.get("VPS_IP", "YOUR_VPS_IP")
 VPS_USER = "root"
 APP_DIR = "/opt/fiction-academy"
 
