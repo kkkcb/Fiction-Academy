@@ -1,166 +1,97 @@
-# Fiction Academy
+# Fiction Academy · 网文创作 Agent
 
-AI 驱动的中文网文创作平台，支持多助理协作、骨架引导、世界观管理、知识图谱、章节生成和编年录追踪。
-
-## 功能
-
-- **项目管理** — 多小说项目，各自独立管理世界观、角色、大纲和章节
-- **骨架引导** — 五点位引导（故事核/世界观/核心人物/倒推大纲/正向大纲），支持 `/gen` 快速生成与 `/consult` 专家圆桌会诊
-- **Goal 模式** — `/goal` 给出创作目标，AI 拆解任务逐步执行（状态持久化，重启不丢）
-- **知识图谱** — 实体/关系结构化管理，三层知识（事实/已揭示/伏笔），按章节切片注入，写章时自动屏蔽伏笔层防剧透
-- **一致性检测** — 对全部设定做矛盾/冲突/缺漏检查
-- **三段式写章** — 章纲（备稿）→ 执笔 → 独立审校（Loop 验证器）
-- **统一上下文管道** — 守则/点位/章纲/图谱/设定/编年录/前情按优先级与 token 预算统一组装
-- **AI 对话** — 流式输出（含思考链）、上下文自动携带设定、重新生成、手动停止
+AI 驱动的中文网文创作平台：五点位骨架引导、三层知识图谱、统一上下文管道、三段式章节生成与编年录追踪，多助理协作覆盖从故事核到成章的全流程。个人项目，独立开发，已部署上线（v1.8）。
 
 ## 技术栈
 
-| 层 | 技术 |
+- **后端**：Python 3.13 / FastAPI / SQLite（WAL，顺序迁移）/ aiosqlite
+- **前端**：Vue 3 + TypeScript + Pinia + Vite（DOMPurify 消毒所有 Markdown 渲染）
+- **模型层**：OpenAI SDK 统一网关（默认智谱 GLM，兼容任意 OpenAI 协议服务）
+- **检索**：jieba 分词的设定检索（wiki）
+- **测试与部署**：pytest + pytest-asyncio（LLM 打桩，零 token 跑测试）；systemd + nginx 密码门
+
+## 核心设计
+
+### 一次写章如何完成
+
+```text
+五点位骨架（故事核 → 世界观 → 核心人物 → 倒推/正向大纲）
+  → 章纲备稿（chapter_plan）
+  → 统一上下文管道组装（守则/点位/章纲/知识图谱/设定/编年录/前情）
+      → 知识图谱按章节切片注入，自动屏蔽「伏笔层」防剧透
+  → 执笔生成（流式，含思考链）
+  → 独立审校（reviewer · Loop 验证器）
+  → 编年录与知识图谱回写（新事实入图谱，剧情入编年录）
+```
+
+### 统一上下文管道
+
+聊天注入 / Goal 执行 / 章纲审校**共用同一批数据加载与拼装逻辑**，消除此前三套平行体系（wiki 页面、metadata 字段、goal 自拼摘要）的漂移——同一份设定在所有场景下以同一形态进入 prompt。
+
+预算策略：每个 Provider 自带内部预算（知识图谱 2K、设定 4K、前情正文截断等），管道最后按 priority 从低到高**整段裁剪**直到总 token 不超限；priority=1 的段落（守则 / 点位 / 章纲）永不裁剪。
+
+### 三层知识图谱
+
+- 实体（角色 / 地点 / 势力 / 物品 / 事件，含别名与属性）+ 带属性的关系
+- 三层知识：**既定事实（truth）/ 已揭示（revealed）/ 伏笔（foreshadow）**
+- 按章节切片注入：写到第 N 章时，只注入第 N 章之前已揭示的事实
+- **写新章自动屏蔽伏笔层**——按任务动态控制上下文可见性，防止模型"偷看"后文剧透导致前文穿帮
+
+### 多助理协作与质量环
+
+- **三段式写章**：章纲（备稿）→ 执笔 → 独立审校（Loop 验证器），生成与校验分离
+- **专家圆桌**（`/consult`）：多助理会诊，断开连接自动取消、无孤儿调用
+- **一致性检测**：对全部设定做矛盾 / 冲突 / 缺漏检查
+- **Goal 模式状态机**：`/goal` 拆解创作目标逐步执行，planning → executing → completed / cancelled，goals / goal_steps 表持久化（重启不丢、支持多实例）；内置 12 维度项目完整性检查（地理 / 势力 / 力量体系 / 角色关系网 / 核心冲突 / 故事结构等）
+
+### LLM 网关
+
+所有模型调用统一入口：认证错误不重试、限流 / 网络错误指数退避；`chat_json` 可带 pydantic response_schema，解析 / 校验失败自动重试；token 用量记录；流式调用在产出首个 chunk 前失败自动重试。
+
+## 代码导航
+
+| 路径 | 职责 |
 |---|---|
-| 后端 | Python 3.13, FastAPI, Uvicorn, aiosqlite, jieba |
-| LLM | OpenAI SDK（默认智谱 bigmodel，兼容任意 OpenAI 协议服务） |
-| 前端 | Vue 3 + TypeScript + Pinia + Vite（`frontend-vue/`，主线） |
-| 数据库 | SQLite（WAL，autocommit + 显式事务） |
-| 测试 | pytest + pytest-asyncio + httpx（`backend/tests/`） |
+| `backend/services/context_builder.py` | 统一上下文管道（Provider + 分层 token 预算 + 优先级裁剪） |
+| `backend/services/kg.py` | 三层知识图谱（实体 / 关系 / 章节切片注入） |
+| `backend/services/wiki.py` | 设定检索（jieba 分词 + token 预算） |
+| `backend/services/goal.py` | Goal 模式状态机 + 12 维完整性检查 |
+| `backend/agents/base.py` | LLM 网关：重试分类 / 结构化校验 / 用量记录 |
+| `backend/agents/chapter_plan.py` | 章纲备稿 |
+| `backend/agents/reviewer.py` | 独立审校（Loop 验证器） |
+| `backend/agents/expert_panel.py` | 专家圆桌（断开自动取消） |
+| `backend/agents/chronicle.py` | 编年录（情节长期记忆） |
+| `backend/api/` | FastAPI 路由（参数校验 + 编排） |
+| `backend/database.py` | SQLite（顺序迁移，失败即启动失败） |
+| `frontend-vue/src/` | Vue3 前端（流式节流 / 停止生成 / 竞态防护） |
+| `scripts/e2e_write_ch*.py`、`scripts/regression.py` | 端到端写章与回归脚本 |
 
-## 快速开始
+各模块 docstring 记录了设计决策的背景（如上下文管道为何要消除三套平行体系），读代码建议从 docstring 入手。
 
-### 1. 环境准备
+## 数据模型
+
+SQLite 单库（`data/fiction_academy.db`，已 gitignore）：`projects`（小说项目）、`workspace_items`（故事核 / 世界观 / 人物设定卡）、`kg_entities` / `kg_relations`（三层知识图谱）、`chronicle`（编年录）、`goals` / `goal_steps`（任务状态机）、`conversations` / `messages`、`assistants`、`materials`、`schema_migrations`。
+
+## 开发与运行
 
 ```bash
 pip install -r backend/requirements.txt
-pip install -r backend/requirements-dev.txt   # 测试依赖（可选）
+cd frontend-vue && npm install && npm run build && cd ..   # 后端托管前端产物
 
-cd frontend-vue && npm install && npm run build   # 构建前端产物（后端直接托管）
-```
+# 项目根目录创建 .env.local
+# LLM_API_KEY=...（默认智谱，可换任意 OpenAI 协议服务）
+# LLM_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
+# FA_DEFAULT_MODEL=glm-5.2
 
-### 2. 配置
-
-在项目根目录创建 `.env.local`：
-
-```env
-LLM_API_KEY=your_api_key_here
-LLM_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
-FA_DEFAULT_MODEL=glm-5.2
-```
-
-### 3. 启动
-
-```bash
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+# 浏览器打开 http://localhost:8000；前端热更新开发模式：cd frontend-vue && npm run dev
 ```
 
-浏览器打开 http://localhost:8000 （FastAPI 自动托管 `frontend-vue/dist`）。
-
-前端开发模式（热更新）：
-
 ```bash
-cd frontend-vue && npm run dev    # http://localhost:5173，/api 代理到 8000
-```
-
-### 4. 测试
-
-```bash
-python -m pytest          # 后端测试（LLM 已打桩，不消耗 token）
+python -m pytest                        # 后端测试（LLM 打桩，不消耗 token）
 cd frontend-vue && npm run typecheck && npm run build
 ```
 
-## 项目结构
+## 说明
 
-```
-Fiction-Academy/
-├── backend/
-│   ├── agents/           # LLM Agent 层
-│   │   ├── base.py       # LLM 网关：统一重试/错误分类/结构化校验/用量记录
-│   │   ├── expert_panel.py    # 专家圆桌（断开自动取消，无孤儿调用）
-│   │   ├── reviewer.py  # 独立审校
-│   │   └── ...
-│   ├── api/              # FastAPI 路由（参数校验 + 编排）
-│   ├── services/
-│   │   ├── context_builder.py # 统一上下文管道（Provider + token 预算）
-│   │   ├── repo.py       # 共享数据访问助手（metadata 解析/upsert/归属校验）
-│   │   ├── goal.py       # Goal 模式状态机（goals/goal_steps 表持久化）
-│   │   ├── kg.py         # 知识图谱（含注入预算）
-│   │   ├── wiki.py       # 设定检索（jieba 分词）
-│   │   └── ...
-│   ├── tests/            # pytest 测试
-│   ├── config.py         # 配置（LLM_*，兼容旧 XIAOMI_* 别名）
-│   ├── database.py       # SQLite（顺序迁移、失败即启动失败、事务助手）
-│   └── main.py           # 入口（托管 frontend-vue/dist）
-├── frontend-vue/         # 主线前端（Vue3 + TS + Pinia）
-│   └── src/
-│       ├── api.ts        # HTTP/流式封装（空闲超时、错误详情、可中断）
-│       ├── stores/app.ts # Pinia store（流式节流、停止生成、竞态防护）
-│       └── components/   # DOMPurify 消毒所有 Markdown 渲染
-├── frontend/             # 旧版原生 JS 前端（已冻结，仅存档；不再被托管）
-├── characters/           # 预置角色定义
-├── docs/                 # 设计文档
-└── data/                 # 运行时数据（gitignore）
-```
-
-## 环境变量
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `LLM_API_KEY` | 空 | 必填，模型服务密钥 |
-| `LLM_BASE_URL` | bigmodel | OpenAI 兼容接入点 |
-| `FA_DEFAULT_MODEL` | glm-5.2 | 默认模型 |
-| `FA_DATABASE_PATH` | `data/fiction_academy.db` | SQLite 路径 |
-| `FA_CORS_ORIGINS` | localhost:8000/5173 | CORS 白名单 |
-| `FA_CHAT_HISTORY_LIMIT` | 40 | 携带的历史消息数 |
-
-## 斜杠命令（前端）
-
-| 命令 | 场景 | 说明 |
-|---|---|---|
-| `/gen <想法>` | 点位对话 | 快速生成该点位设定 |
-| `/consult <想法>` | 点位对话 | 五位专家圆桌会诊 |
-| `/goal <目标>` | 任意 | Goal 模式：拆解任务逐步执行 |
-
-## 回归测试（每次更新代码后必须执行）
-
-任何代码改动推送前，依次跑完三层验证，全部通过才算完成：
-
-```bash
-# ① 单元/桩测（LLM 打桩，覆盖业务逻辑）
-python -m pytest backend/tests -q
-
-# ② 前端构建 + 类型检查（vue-tsc）
-cd frontend-vue && npm run build && cd ..
-
-# ③ 按钮级活体回归（需本地后端已启动；在一次性项目上逐一验证所有 UI 按钮的后端行为）
-python scripts/regression.py            # 快速模式（无 LLM 调用，约 3 秒）
-python scripts/regression.py --with-llm # 含真实聊天流冒烟
-```
-
-`scripts/regression.py` 覆盖：新建/重命名/删除项目、创作守则、五个点位进入、
-新建/重命名/删除对话、消息右键删除、添加/编辑/审批/锁定/解锁/删除设定、
-知识图谱实体增删、写作守卫（无骨架 409）、各类异常路径（404/409/422）。
-
-## 换机续写（数据随私有仓库走）
-
-小说数据（全部项目/章节/素材库）存于 `data/fiction_academy.db`，已随仓库同步（WAL 运行时文件除外）。
-
-**写完内容后推送数据：**
-```bash
-python scripts/push_data.py "备注"   # 自动 checkpoint + commit + push
-```
-
-**在新机器上继续：**
-```bash
-git clone https://github.com/kkkcb/Fiction-Academy.git
-cd Fiction-Academy
-# 1) 拷贝 .env.local（只有一行 API Key，不在 git 里，从旧机器复制或重写）
-# 2) 安装依赖并启动（Windows 双击 启动本地版.bat），或：
-pip install -r backend/requirements.txt
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
-
-**注意：**
-- 数据库是二进制文件**不能合并**——不要两台机器同时写作后各自 push；固定"一台写完 push、另一台 pull 再写"
-- API Key 永远不进 git（含 Token 的 .env.local 已被忽略）
-- 服务器（YOUR_VPS_IP）的数据库独立于 git；如需把服务器数据拉回本地：`scp root@YOUR_VPS_IP:/opt/fiction-academy/data/fiction_academy.db data/`
-
-## License
-
-MIT
+个人项目，代码仅供学习参考。部署文档见 [docs/deploy.md](docs/deploy.md)（服务器地址以 `YOUR_VPS_IP` 占位，需自行替换）。
